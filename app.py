@@ -1,4 +1,4 @@
-# app.py - Final Study Buddy (topic-sensitive generator, replace on generate, copy+download only)
+# app.py - Study Buddy (improved domain-aware generator for accurate topic plans)
 # Requirements: pip install streamlit reportlab (reportlab optional for PDF)
 
 import re
@@ -36,6 +36,13 @@ def save_user_state(uid: str, state: Dict[str, Any]) -> None:
 
 # -------------------------
 # helpers
+STOPWORDS = {"and","the","of","in","for","to","with","a","an","on","by","&","&amp;"}
+
+def clean_tokens(topic: str) -> List[str]:
+    parts = re.split(r'[^0-9A-Za-z]+', topic.lower())
+    toks = [p for p in parts if p and p not in STOPWORDS]
+    return toks or [topic.lower()]
+
 def slugify(s: Optional[str]) -> str:
     if s is None:
         return "item"
@@ -126,73 +133,169 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     return buffer.read()
 
 # -------------------------
-# Improved topic-dependent local plan generator
+# Domain detection and domain-specific modules
 def deterministic_seed(s: str) -> int:
     h = hashlib.md5(s.encode("utf-8")).hexdigest()
-    # small integer seed derived from hash
     return int(h[:8], 16)
 
-def topic_keywords(topic: str) -> List[str]:
-    # break topic into meaningful pieces and add variations
-    parts = re.split(r'[^0-9A-Za-z]+', topic.strip())
-    parts = [p.lower() for p in parts if p]
-    # common fallback keywords if topic is short
-    defaults = ["basics", "theory", "practice", "project", "tools", "reading"]
-    kws = parts + defaults
-    # deduplicate preserving order
-    seen = set()
-    out = []
-    for k in kws:
-        if k not in seen:
-            out.append(k)
-            seen.add(k)
-    return out
+# domain module templates for better relevance
+DOMAIN_MODULES = {
+    "dsa": [
+        ["Arrays", "Strings", "Two Pointers"],
+        ["Linked Lists", "Stacks", "Queues"],
+        ["Trees", "Binary Search Tree", "Trie"],
+        ["Graphs", "BFS/DFS", "Shortest Paths"],
+        ["Sorting", "Searching", "Hashing"],
+        ["Dynamic Programming", "Greedy", "Backtracking"]
+    ],
+    "ml": [
+        ["Math & Linear Algebra", "Probability", "Statistics"],
+        ["Supervised Learning", "Regression", "Classification"],
+        ["Neural Networks", "CNNs", "RNNs"],
+        ["Optimization", "Loss Functions", "Regularization"],
+        ["Deployment", "Model Serving", "Monitoring"],
+        ["Advanced Topics", "Transformers", "Self-supervised"]
+    ],
+    "web": [
+        ["HTML & CSS", "DOM", "Accessibility"],
+        ["JavaScript Basics", "ES6+", "DOM Manipulation"],
+        ["Frontend Framework", "React/Vue", "State Management"],
+        ["Backend Basics", "APIs", "Databases"],
+        ["Auth & Security", "Testing", "Deployment"],
+        ["Performance", "Caching", "Scaling"]
+    ],
+    "db": [
+        ["RDBMS Basics", "SQL Queries", "Joins"],
+        ["Indexes", "Query Optimization", "Transactions"],
+        ["NoSQL Basics", "Document Stores", "Key-Value DB"],
+        ["Data Modeling", "Normalization", "Denormalization"],
+        ["Replication", "Sharding", "Backup/Restore"],
+        ["Analytics", "OLAP", "Data Warehousing"]
+    ],
+    "cv": [
+        ["Image Processing", "Filters", "Transforms"],
+        ["Classical CV", "Features", "SIFT/ORB"],
+        ["Deep CV", "CNNs", "Object Detection"],
+        ["Segmentation", "Keypoints", "Pose Estimation"],
+        ["Data Augmentation", "Training Tricks", "Transfer Learning"],
+        ["Deployment", "Edge Models", "Optimization"]
+    ],
+    "default": [
+        ["Introduction", "Core Concepts", "Motivation"],
+        ["Tools & Setup", "Libraries", "Environment"],
+        ["Core Algorithms", "Patterns", "Practice"],
+        ["Mini-project", "Integration", "Testing"],
+        ["Optimization", "Scaling", "Evaluation"],
+        ["Advanced Concepts", "Papers", "Further Reading"]
+    ]
+}
 
+def detect_domain(tokens: List[str]) -> str:
+    tset = set(tokens)
+    # simple heuristics
+    if any(x in tset for x in ("dsa","ds","data","structure","structures","algorithm","algorithms","algo")):
+        return "dsa"
+    if any(x in tset for x in ("ml","machine","learning","neural","deep","model","models")):
+        return "ml"
+    if any(x in tset for x in ("web","frontend","backend","react","vue","javascript","html","css","node")):
+        return "web"
+    if any(x in tset for x in ("db","database","sql","nosql","postgres","mysql","mongodb")):
+        return "db"
+    if any(x in tset for x in ("cv","vision","image","opencv","cnn","segmentation","detection")):
+        return "cv"
+    return "default"
+
+# build topic-aware day list using domain modules
 def build_topic_daylist(topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
     weeks = max(1, int(weeks))
+    tokens = clean_tokens(topic)
+    domain = detect_domain(tokens)
     seed = deterministic_seed(topic + str(answers.get("skill_level","")))
-    kws = topic_keywords(topic)
-    # different "modules" to vary content
-    module_buckets = [
-        ["Intro", "History", "Concepts"],
-        ["Data", "Libraries", "Tools"],
-        ["Algorithms", "Models", "Practice"],
-        ["Projects", "Deployment", "Testing"],
-        ["Optimization", "Evaluation", "Scaling"],
-        ["Advanced Topics", "Papers", "Research"],
-    ]
-    # rotate buckets deterministically
-    rotated = module_buckets[seed % len(module_buckets):] + module_buckets[:seed % len(module_buckets)]
+    modules = DOMAIN_MODULES.get(domain, DOMAIN_MODULES["default"])
     base_days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
     weeks_list = []
     for w in range(weeks):
         day_entries = []
-        # produce day topics using kws and rotated modules + shifting
         for i, day in enumerate(base_days):
-            # pick 2-3 topics for this day deterministically
-            idx1 = (seed + w*7 + i*3) % max(1, len(kws))
-            idx2 = (seed + w*11 + i*5) % max(1, len(rotated))
-            idx3 = (seed + w*13 + i*7) % len(kws)
-            topic1 = kws[idx1].capitalize()
-            module = rotated[idx2 % len(rotated)]
-            module_item = module[i % len(module)]
-            topic2 = module_item
-            # vary third item sometimes
-            if (seed + w + i) % 2 == 0:
-                topic3 = f"Practice: {kws[idx3]}"
-                topics = [f"{topic1} — {topic2}", topic3]
+            # choose module row and two items deterministically
+            row_idx = (seed + w*3 + i) % len(modules)
+            row = modules[row_idx]
+            primary = row[i % len(row)]
+            secondary = row[(i+1) % len(row)]
+            # add practice / mini task tailored to domain tokens
+            task_token = tokens[(seed + i + w) % len(tokens)]
+            if domain == "dsa":
+                practice = f"LeetCode practice: {task_token}"
+                topics = [primary, secondary, practice]
+            elif domain == "ml":
+                practice = f"Small experiment: implement {task_token}"
+                topics = [primary, secondary, practice]
+            elif domain == "web":
+                practice = f"Build: mini {task_token} feature"
+                topics = [primary, secondary, practice]
+            elif domain == "db":
+                practice = f"Design exercise: model {task_token}"
+                topics = [primary, secondary, practice]
+            elif domain == "cv":
+                practice = f"Notebook: try detection on {task_token}"
+                topics = [primary, secondary, practice]
             else:
-                topics = [topic1, topic2, f"Mini task: {kws[idx3]}"]
+                practice = f"Practice: {task_token}"
+                topics = [primary, secondary, practice]
             day_entries.append({"day": day, "topics": topics})
         weeks_list.append({"days": day_entries})
-    daily_template = f"{answers.get('hours_per_day',2)} hours/day: mix of theory + practice + mini project"
-    # resource suggestions made topic-aware
-    resources = [
-        f"Intro course about {topic}",
-        f"Top tutorials for {kws[0]}",
-        f"Book / notes on {kws[0].title()}",
-        "YouTube playlists & sample projects"
-    ]
+    # daily template tuned by domain & skill
+    hours = answers.get("hours_per_day", 2)
+    if domain == "dsa":
+        daily_template = f"{hours} hours/day: 60% practice (problems) + 30% concept review + 10% mock tests"
+    elif domain == "ml":
+        daily_template = f"{hours} hours/day: 35% theory + 45% experiments + 20% reading papers"
+    else:
+        daily_template = f"{hours} hours/day: mix of theory + practice + mini project"
+    # resources tailored
+    top_token = tokens[0] if tokens else topic
+    if domain == "dsa":
+        resources = [
+            f"Top LeetCode lists for {top_token}",
+            "Book: Elements of Programming Interviews / CLRS (select chapters)",
+            "Interactive platforms: HackerRank, Codeforces practice sets",
+            "YouTube: algorithm concept playlists"
+        ]
+    elif domain == "ml":
+        resources = [
+            f"Course on {top_token} (Coursera/fast.ai)",
+            "Book: Hands-On Machine Learning",
+            "Kaggle datasets & tutorials",
+            "Papers & recipes for model tuning"
+        ]
+    elif domain == "web":
+        resources = [
+            f"Official docs & tutorials on {top_token}",
+            "Frontend projects: build clones and components",
+            "Backend API & DB tutorials",
+            "Deployment guides (Vercel/Netlify/Docker)"
+        ]
+    elif domain == "db":
+        resources = [
+            f"SQL tutorials for {top_token}",
+            "DB design examples & normalization guides",
+            "Indexing & performance tuning articles",
+            "Practice: design schemas for sample apps"
+        ]
+    elif domain == "cv":
+        resources = [
+            f"CV course: practical CNN projects for {top_token}",
+            "OpenCV & PyTorch notebooks",
+            "Datasets for experiments (COCO, VOC)",
+            "Papers & model zoo examples"
+        ]
+    else:
+        resources = [
+            f"Intro course about {topic}",
+            f"Top tutorials for {top_token}",
+            f"Book / notes on {top_token}",
+            "YouTube playlists & sample projects"
+        ]
     plan = {"weeks": weeks_list, "daily_template": daily_template, "resources": resources}
     return plan
 
@@ -239,7 +342,6 @@ st.markdown("""
 # Sidebar form (use keys only so no session-state default warnings)
 with st.sidebar:
     st.header("Create Plan")
-    # initialize defaults only if missing
     if "topic_input" not in st.session_state:
         st.session_state["topic_input"] = "machine learning"
     if "weeks_input" not in st.session_state:
@@ -271,11 +373,9 @@ if submit:
         st.error("Please enter a topic.")
     else:
         answers = {"skill_level": st.session_state.get("skill_input"), "hours_per_day": st.session_state.get("hours_input"), "goal": st.session_state.get("goal_input")}
-        # Use the improved local generator (topic-sensitive)
         rec = local_create_plan(uid, st.session_state["topic_input"].strip(), int(st.session_state["weeks_input"]), answers)
         state = get_user_state(uid)
         plans = state.get("plans", [])
-        # Replace the existing plan (index 0) or insert if empty
         if plans:
             plans[0] = rec
         else:
