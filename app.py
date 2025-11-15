@@ -96,54 +96,130 @@ def plan_to_text(record: Dict[str, Any]) -> str:
 def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     if not REPORTLAB_AVAILABLE:
         raise RuntimeError("reportlab not installed")
+
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+
+    # Clean professional margins
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=50,
+        leftMargin=50,
+        topMargin=50,
+        bottomMargin=50
+    )
+
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("TitleCustom", parent=styles["Title"], fontSize=18, leading=22, alignment=0, spaceAfter=12)
-    meta_style = ParagraphStyle("Meta", parent=styles["Normal"], fontSize=10, textColor=colors.grey, spaceAfter=8)
-    heading_style = ParagraphStyle("Heading", parent=styles["Heading3"], fontSize=12, leading=14, spaceBefore=8, spaceAfter=6)
-    normal_style = ParagraphStyle("NormalCustom", parent=styles["Normal"], fontSize=11, leading=14, spaceAfter=4)
-    bullet_style = ParagraphStyle("Bullet", parent=styles["Normal"], fontSize=11, leftIndent=12, leading=14, spaceAfter=2)
+
+    # Clean, professional styles (Sans-serif)
+    title_style = ParagraphStyle(
+        "TitleStyle",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=18,
+        leading=22,
+        spaceAfter=14
+    )
+
+    heading_style = ParagraphStyle(
+        "HeadingStyle",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=13,
+        leading=16,
+        spaceBefore=10,
+        spaceAfter=6
+    )
+
+    body_style = ParagraphStyle(
+        "BodyStyle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=11,
+        leading=15,
+        spaceAfter=4
+    )
+
+    bullet_style = ParagraphStyle(
+        "BulletStyle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=11,
+        leftIndent=12,
+        leading=15,
+        spaceAfter=2
+    )
+
     story = []
+
+    # Title
     story.append(Paragraph(escape(title), title_style))
+
+    # Meta
     created_ts = int(record.get("created_at", time.time()))
-    meta_text = f"Saved: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(created_ts))} • Source: {escape(str(record.get('source','local')))} • Weeks: {record.get('weeks')}"
-    story.append(Paragraph(meta_text, meta_style))
+    meta_txt = (
+        f"Saved: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(created_ts))}  |  "
+        f"Source: {escape(str(record.get('source','local')))}  |  "
+        f"Weeks: {record.get('weeks')}"
+    )
+    story.append(Paragraph(meta_txt, body_style))
+    story.append(Spacer(1, 10))
+
+    # Summary
     answers = record.get("answers", {})
-    summary = f"Weeks: {record.get('weeks','—')}  •  Skill: {escape(str(answers.get('skill_level','—')))}  •  Hours/day: {escape(str(answers.get('hours_per_day','—')))}"
-    story.append(Paragraph(summary, normal_style))
+    story.append(Paragraph("<b>Summary</b>", heading_style))
+    story.append(Paragraph(
+        f"Weeks: {record.get('weeks','—')}<br/>"
+        f"Skill level: {escape(str(answers.get('skill_level','—')))}<br/>"
+        f"Hours/day: {escape(str(answers.get('hours_per_day','—')))}",
+        body_style
+    ))
+
     if answers.get("goal"):
-        story.append(Paragraph(f"<b>Goal:</b> {escape(str(answers.get('goal')))}", normal_style))
-    story.append(Spacer(1, 8))
+        story.append(Paragraph(f"<b>Goal:</b> {escape(str(answers.get('goal')))}", body_style))
+
+    story.append(Spacer(1, 10))
+
+    # Weeks plan
+    story.append(Paragraph("<b>Study Plan</b>", heading_style))
+
     plan = record.get("plan", {})
-    weeks_list = plan.get("weeks", [])
-    for w_i, week in enumerate(weeks_list, start=1):
+    week_list = plan.get("weeks", [])
+
+    for w_i, week in enumerate(week_list, start=1):
         story.append(Paragraph(f"Week {w_i}", heading_style))
+
         for d in week.get("days", []):
             day_name = escape(d.get("day", ""))
             topics = d.get("topics", [])
-            topics_str = escape(", ".join(topics) if isinstance(topics, list) else str(topics))
+            topics_str = escape(", ".join(topics)) if isinstance(topics, list) else escape(str(topics))
             story.append(Paragraph(f"• <b>{day_name}:</b> {topics_str}", bullet_style))
+
         story.append(Spacer(1, 6))
+
+    # Daily template
     daily_template = plan.get("daily_template")
     if daily_template:
-        story.append(Paragraph("<b>Daily Template:</b>", heading_style))
-        story.append(Paragraph(escape(daily_template), normal_style))
-        story.append(Spacer(1, 6))
+        story.append(Paragraph("<b>Daily Template</b>", heading_style))
+        story.append(Paragraph(escape(daily_template), body_style))
+        story.append(Spacer(1, 8))
+
+    # Resources (titles only, formal)
     resources = plan.get("resources", [])
     if resources:
-        story.append(Paragraph("<b>Recommended Resources:</b>", heading_style))
+        story.append(Paragraph("<b>Recommended Resources</b>", heading_style))
         for r in resources:
-            # include only title text in PDF as well
             if isinstance(r, dict):
                 title = r.get("title") or r.get("name") or str(r)
             else:
                 title = str(r)
             story.append(Paragraph(f"• {escape(title)}", bullet_style))
-        story.append(Spacer(1, 6))
+        story.append(Spacer(1, 10))
+
     doc.build(story)
     buffer.seek(0)
     return buffer.read()
+
 
 # ---------- domain modules ----------
 DOMAIN_MODULES = {
