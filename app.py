@@ -9,7 +9,6 @@ import json
 import ast
 from typing import Dict, Any, List, Optional
 from html import escape
-from urllib.parse import quote_plus
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -89,11 +88,17 @@ def plan_to_text(record: Dict[str, Any]) -> str:
     weeks_list = plan.get("weeks", [])
     for w_i, week in enumerate(weeks_list, start=1):
         lines.append(f"Week {w_i}")
+        # ensure Mon-Sun order in text version too
+        desired_days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+        day_map = {}
         for d in week.get("days", []):
-            day_name = d.get("day", "")
-            topics = d.get("topics", [])
-            topics_str = safe_topics(topics)
-            lines.append(f"  - {day_name}: {topics_str}")
+            name = (d.get("day") or "").strip()
+            nm = name[:3].title() if name else ""
+            day_map[nm] = d.get("topics", [])
+        for dd in desired_days:
+            topics = day_map.get(dd)
+            topics_str = safe_topics(topics) if topics is not None else "Rest / Catch-up / Self-study"
+            lines.append(f"  - {dd}: {topics_str}")
         lines.append("")
     if plan.get("daily_template"):
         lines.append("Daily Template:")
@@ -110,13 +115,11 @@ def plan_to_text(record: Dict[str, Any]) -> str:
                 lines.append(f"  - {r}")
     return "\n".join(lines)
 
-# ---------- PDF helper ----------
+# ---------- PDF helper (clean - no UI calls) ----------
 def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     """
-    Produces a clean, professional PDF (Helvetica) that:
-      - Forces Mon -> Sun for every week (fills missing days with a Rest/Catch-up note)
-      - Uses a robust safe_topics() formatter to avoid TypeError
-      - Prints resources as titles only
+    Clean, professional PDF generator — Helvetica, forces Mon->Sun,
+    uses safe_topics formatting and does NOT contain any UI (st.markdown).
     """
     if not REPORTLAB_AVAILABLE:
         raise RuntimeError("reportlab not installed")
@@ -213,44 +216,48 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     week_list = plan.get("weeks", [])
     desired_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-    for w_i, week in enumerate(weeks_list, start=1):
-    st.markdown(f"<div class='sb-week'>Week {w_i}</div>", unsafe_allow_html=True)
+    for w_i, week in enumerate(week_list, start=1):
+        story.append(Paragraph(f"Week {w_i}", heading_style))
 
-    # Force show Mon -> Sun on the web UI (fill missing days with Rest / Catch-up)
-    desired_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        # Build map short-day -> topics
+        day_map = {}
+        for d in week.get("days", []):
+            name = (d.get("day") or "").strip()
+            nm = name[:3].title() if name else ""
+            day_map[nm] = d.get("topics", [])
 
-    # Build a short-name -> topics map (normalize "Monday" -> "Mon")
-    day_map_ui = {}
-    for d in week.get("days", []):
-        name = (d.get("day") or "").strip()
-        nm = name[:3].title() if name else ""
-        day_map_ui[nm] = d.get("topics", [])
-
-    for dd in desired_days:
-        topics = day_map_ui.get(dd)
-        if topics:
-            # safe join/format for list/dict/string
-            if isinstance(topics, list):
-                topics_str = ", ".join(str(x) for x in topics)
-            elif isinstance(topics, dict):
-                topics_str = ", ".join(f"{k}: {v}" for k, v in topics.items())
-            elif topics is None:
-                topics_str = "—"
+        for dd in desired_days:
+            topics = day_map.get(dd)
+            if topics:
+                topics_str = escape(safe_topics_pdf(topics))
+                story.append(Paragraph(f"• <b>{dd}:</b> {topics_str}", bullet_style))
             else:
-                topics_str = str(topics)
+                story.append(Paragraph(f"• <b>{dd}:</b> Rest / Catch-up / Self-study", bullet_style))
 
-            st.markdown(
-                f"<div class='sb-day'>• <strong>{dd}:</strong> {escape(topics_str)}</div>",
-                unsafe_allow_html=True
-            )
-        else:
-            st.markdown(
-                f"<div class='sb-day'>• <strong>{dd}:</strong> Rest / Catch-up / Self-study</div>",
-                unsafe_allow_html=True
-            )
+        story.append(Spacer(1, 8))
 
-    st.markdown("")  # small spacer after each week
+    # Daily template
+    daily_template = plan.get("daily_template")
+    if daily_template:
+        story.append(Paragraph("<b>Daily Template</b>", heading_style))
+        story.append(Paragraph(escape(daily_template), body_style))
+        story.append(Spacer(1, 8))
 
+    # Resources (titles only)
+    resources = plan.get("resources", [])
+    if resources:
+        story.append(Paragraph("<b>Recommended Resources</b>", heading_style))
+        for r in resources:
+            if isinstance(r, dict):
+                title = r.get("title") or r.get("name") or str(r)
+            else:
+                title = str(r)
+            story.append(Paragraph(f"• {escape(title)}", bullet_style))
+        story.append(Spacer(1, 10))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.read()
 
 # ---------- domain modules ----------
 DOMAIN_MODULES = {
@@ -567,13 +574,25 @@ else:
         st.markdown("")
 
         weeks_list = plan_data.get("weeks", [])
+        # UI: force Mon -> Sun
         for w_i, week in enumerate(weeks_list, start=1):
             st.markdown(f"<div class='sb-week'>Week {w_i}</div>", unsafe_allow_html=True)
+
+            desired_days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+            day_map_ui = {}
             for d in week.get("days", []):
-                day_name = d.get("day", "")
-                topics = d.get("topics", [])
-                topics_str = safe_topics(topics)
-                st.markdown(f"<div class='sb-day'>• <strong>{day_name}:</strong> {escape(topics_str)}</div>", unsafe_allow_html=True)
+                name = (d.get("day") or "").strip()
+                nm = name[:3].title() if name else ""
+                day_map_ui[nm] = d.get("topics", [])
+
+            for dd in desired_days:
+                topics = day_map_ui.get(dd)
+                if topics:
+                    topics_str = safe_topics(topics)
+                    st.markdown(f"<div class='sb-day'>• <strong>{dd}:</strong> {escape(topics_str)}</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='sb-day'>• <strong>{dd}:</strong> Rest / Catch-up / Self-study</div>", unsafe_allow_html=True)
+
             st.markdown("")
 
         if plan_data.get("daily_template"):
