@@ -381,7 +381,7 @@ if submit:
 
 st.markdown("<div class='sb-page'><div class='sb-container'>", unsafe_allow_html=True)
 st.markdown("<div class='sb-title'>Study Buddy</div>", unsafe_allow_html=True)
-st.markdown("<div class='sb-sub'>Topic-aware study plans — remote API used when available.</div>", unsafe_allow_html=True)
+st.markdown("<div class='sb-sub'>Personalized study plans tuned to your topic — remote AI boosts suggestions when accessible.🥸</div>", unsafe_allow_html=True)
 if status_saved:
     st.success("Saved to memory.")
 st.markdown("---")
