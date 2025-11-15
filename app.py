@@ -1,19 +1,14 @@
-# app.py - Final Study Buddy (Groq retry-on-model-not-found + local fallback)
-# Requirements: pip install streamlit requests reportlab
-import re
-import time
-import io
-import base64
-import hashlib
-import json
+# app.py - Study Buddy (final) 
+# Features: Groq LLM remote generator + quizzes + resource links + onboarding + exports + chat assistant
+# Requirements: pip install streamlit requests reportlab python-docx (optional)
+import re, time, io, base64, hashlib, json, math
 from typing import Dict, Any, List, Optional
 from html import escape
-
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
 
-# Optional PDF support
+# optional extras
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -23,9 +18,23 @@ try:
 except Exception:
     REPORTLAB_AVAILABLE = False
 
+try:
+    import docx
+    DOCX_AVAILABLE = True
+except Exception:
+    DOCX_AVAILABLE = False
+
+# --- small config ---
+st.set_page_config(page_title="Study Buddy", layout="wide", initial_sidebar_state="expanded")
+SHOW_DEBUG_DEFAULT = False     # hide banners/messages unless user enables debug
+
 # ---------- session state ----------
 if "demo_state" not in st.session_state:
     st.session_state["demo_state"] = {"plans": []}
+if "view" not in st.session_state:
+    st.session_state["view"] = "main"   # 'main' | 'onboarding' | 'chat'
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
 
 def get_user_state(uid: str) -> Dict[str, Any]:
     return st.session_state["demo_state"]
@@ -34,490 +43,414 @@ def save_user_state(uid: str, state: Dict[str, Any]) -> None:
     st.session_state["demo_state"] = state
 
 # ---------- helpers ----------
-STOPWORDS = {"and","the","of","in","for","to","with","a","an","on","by","&","&amp;","is","this"}
-
-def clean_tokens(topic: str) -> List[str]:
-    parts = re.split(r'[^0-9A-Za-z]+', topic.lower())
-    toks = [p for p in parts if p and p not in STOPWORDS]
-    return toks or [topic.lower()]
-
-def deterministic_seed(s: str) -> int:
-    h = hashlib.md5(s.encode("utf-8")).hexdigest()
-    return int(h[:8], 16)
-
 def slugify(s: Optional[str]) -> str:
-    if s is None:
-        return "item"
+    if s is None: return "item"
     s = str(s).strip().lower()
     s = re.sub(r'[^0-9a-z]+', '_', s)
     s = re.sub(r'__+', '_', s).strip('_')
     return s or "item"
 
 def plan_to_text(record: Dict[str, Any]) -> str:
-    lines: List[str] = []
+    lines = []
     lines.append(f"Study Buddy — Plan: {record.get('topic','')}")
-    created_ts = int(record.get("created_at", time.time()))
-    lines.append(f"Saved: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(created_ts))}")
-    lines.append(f"Source: {record.get('source','local')} • Weeks: {record.get('weeks')}")
+    lines.append(f"Saved: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(record.get('created_at', time.time()))) }")
+    lines.append(f"Source: {record.get('source','local')}")
     lines.append("")
     answers = record.get("answers", {})
     lines.append(f"Weeks: {record.get('weeks','—')}  •  Skill: {answers.get('skill_level','—')}  •  Hours/day: {answers.get('hours_per_day','—')}")
-    if answers.get("goal"):
+    if answers.get('goal'):
         lines.append(f"Goal: {answers.get('goal')}")
     lines.append("")
     plan = record.get("plan", {})
     weeks_list = plan.get("weeks", [])
-    for w_i, week in enumerate(weeks_list, start=1):
+    for w_i, w in enumerate(weeks_list, start=1):
         lines.append(f"Week {w_i}")
-        for d in week.get("days", []):
-            day_name = d.get("day", "")
-            topics = d.get("topics", [])
-            topics_str = ", ".join(topics) if isinstance(topics, list) else str(topics)
-            lines.append(f"  - {day_name}: {topics_str}")
+        for d in w.get("days", []):
+            lines.append(f"  - {d.get('day')}: {', '.join(d.get('topics',[]))}")
         lines.append("")
     if plan.get("daily_template"):
         lines.append("Daily Template:")
         lines.append(f"  {plan.get('daily_template')}")
-        lines.append("")
     if plan.get("resources"):
-        lines.append("Recommended Resources:")
+        lines.append("")
+        lines.append("Resources:")
         for r in plan.get("resources", []):
-            lines.append(f"  - {r}")
+            lines.append(f"  - {r.get('title')} — {r.get('url') if r.get('url') else ''}")
+    if record.get('quiz'):
+        lines.append("")
+        lines.append("Quiz:")
+        for i,q in enumerate(record.get('quiz',[]), start=1):
+            lines.append(f"{i}. {q.get('q')}")
+            for idx,opt in enumerate(q.get('options',[]), start=1):
+                lines.append(f"   {idx}) {opt}")
+            lines.append(f"   Answer: {q.get('a')}")
     return "\n".join(lines)
 
-# ---------- PDF helper ----------
-def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
-    if not REPORTLAB_AVAILABLE:
-        raise RuntimeError("reportlab not installed")
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("TitleCustom", parent=styles["Title"], fontSize=18, leading=22, alignment=0, spaceAfter=12)
-    meta_style = ParagraphStyle("Meta", parent=styles["Normal"], fontSize=10, textColor=colors.grey, spaceAfter=8)
-    heading_style = ParagraphStyle("Heading", parent=styles["Heading3"], fontSize=12, leading=14, spaceBefore=8, spaceAfter=6)
-    normal_style = ParagraphStyle("NormalCustom", parent=styles["Normal"], fontSize=11, leading=14, spaceAfter=4)
-    bullet_style = ParagraphStyle("Bullet", parent=styles["Normal"], fontSize=11, leftIndent=12, leading=14, spaceAfter=2)
-    story = []
-    story.append(Paragraph(escape(title), title_style))
-    created_ts = int(record.get("created_at", time.time()))
-    meta_text = f"Saved: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(created_ts))} • Source: {escape(str(record.get('source','local')))} • Weeks: {record.get('weeks')}"
-    story.append(Paragraph(meta_text, meta_style))
-    answers = record.get("answers", {})
-    summary = f"Weeks: {record.get('weeks','—')}  •  Skill: {escape(str(answers.get('skill_level','—')))}  •  Hours/day: {escape(str(answers.get('hours_per_day','—')))}"
-    story.append(Paragraph(summary, normal_style))
-    if answers.get("goal"):
-        story.append(Paragraph(f"<b>Goal:</b> {escape(str(answers.get('goal')))}", normal_style))
-    story.append(Spacer(1, 8))
-    plan = record.get("plan", {})
-    weeks_list = plan.get("weeks", [])
-    for w_i, week in enumerate(weeks_list, start=1):
-        story.append(Paragraph(f"Week {w_i}", heading_style))
-        for d in week.get("days", []):
-            day_name = escape(d.get("day", ""))
-            topics = d.get("topics", [])
-            topics_str = escape(", ".join(topics) if isinstance(topics, list) else str(topics))
-            story.append(Paragraph(f"• <b>{day_name}:</b> {topics_str}", bullet_style))
-        story.append(Spacer(1, 6))
-    daily_template = plan.get("daily_template")
-    if daily_template:
-        story.append(Paragraph("<b>Daily Template:</b>", heading_style))
-        story.append(Paragraph(escape(daily_template), normal_style))
-        story.append(Spacer(1, 6))
-    resources = plan.get("resources", [])
-    if resources:
-        story.append(Paragraph("<b>Recommended Resources:</b>", heading_style))
-        for r in resources:
-            story.append(Paragraph(f"• {escape(str(r))}", bullet_style))
-        story.append(Spacer(1, 6))
-    doc.build(story)
-    buffer.seek(0)
-    return buffer.read()
-
-# ---------- domain modules ----------
-DOMAIN_MODULES = {
-    "dsa":[["Arrays","Strings","Two Pointers"],["Linked Lists","Stacks","Queues"],["Trees","BST","Trie"],["Graphs","BFS/DFS","Shortest Paths"],["Sorting","Searching","Hashing"],["Dynamic Programming","Greedy","Backtracking"]],
-    "ml":[["Math & Linear Algebra","Probability","Statistics"],["Supervised Learning","Regression","Classification"],["Neural Networks","CNNs","RNNs"],["Optimization","Loss Functions","Regularization"],["Deployment","Model Serving","Monitoring"],["Advanced Topics","Transformers","Self-supervised"]],
-    "web":[["HTML & CSS","DOM","Accessibility"],["JavaScript Basics","ES6+","DOM Manipulation"],["Frontend Framework","React/Vue","State Management"],["Backend Basics","APIs","Databases"],["Auth & Security","Testing","Deployment"],["Performance","Caching","Scaling"]],
-    "db":[["RDBMS Basics","SQL Queries","Joins"],["Indexes","Query Optimization","Transactions"],["NoSQL Basics","Document Stores","Key-Value DB"],["Data Modeling","Normalization","Denormalization"],["Replication","Sharding","Backup/Restore"],["Analytics","OLAP","Data Warehousing"]],
-    "cv":[["Image Processing","Filters","Transforms"],["Classical CV","Features","SIFT/ORB"],["Deep CV","CNNs","Object Detection"],["Segmentation","Keypoints","Pose Estimation"],["Data Augmentation","Training Tricks","Transfer Learning"],["Deployment","Edge Models","Optimization"]],
-    "career":[["Resume & Profile","Formatting","Keywords"],["Behavioral Questions","STAR Method","Story Crafting"],["Mock Interviews","Problem Solving","Pair Practice"],["Company Research","Role Mapping","Expectations"],["System Design / Case Study","High-level Thinking","Trade-offs"],["Negotiation & HR","Offer Review","Salary Discussion"]],
-    "default":[["Introduction","Core Concepts","Motivation"],["Tools & Setup","Libraries","Environment"],["Core Algorithms","Patterns","Practice"],["Mini-project","Integration","Testing"],["Optimization","Scaling","Evaluation"],["Advanced Concepts","Papers","Further Reading"]]
-}
-
-def detect_domain(tokens: List[str]) -> str:
-    tset = set(tokens)
-    if any(x in tset for x in ("interview","interviews","resume","cv","cvresume","behavioural","behavioral","behavior","soft","skill","skills","communication","story","portfolio","networking","negotiation","salary","hr","offer","mock")):
+# ---------- local deterministic fallback generator (works without remote)
+# lightweight domain detection to make plans relevant
+def detect_domain_from_topic(topic: str) -> str:
+    t = topic.lower()
+    if any(k in t for k in ["interview","resume","soft","communication","behaviour","behavioral","hr","offer","mock"]):
         return "career"
-    if any(x in tset for x in ("dsa","ds","data","structure","structures","algorithm","algorithms","algo")):
+    if any(k in t for k in ["data structure","dsa","algorithm","algorithms","leetcode","codeforce","algo"]):
         return "dsa"
-    if any(x in tset for x in ("ml","machine","learning","neural","deep","model","models")):
+    if any(k in t for k in ["machine learning","ml","deep learning","neural","model"]):
         return "ml"
-    if any(x in tset for x in ("web","frontend","backend","react","vue","javascript","html","css","node")):
+    if any(k in t for k in ["web","react","frontend","backend","javascript","node"]):
         return "web"
-    if any(x in tset for x in ("db","database","sql","nosql","postgres","mysql","mongodb")):
-        return "db"
-    if any(x in tset for x in ("cv","vision","image","opencv","cnn","segmentation","detection")):
-        return "cv"
-    return "default"
+    return "general"
 
-def build_topic_daylist(topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
-    weeks = max(1, int(weeks))
-    tokens = clean_tokens(topic)
-    domain = detect_domain(tokens)
-    seed = deterministic_seed(topic + str(answers.get("skill_level","")))
-    modules = DOMAIN_MODULES.get(domain, DOMAIN_MODULES["default"])
-    base_days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+def local_plan(topic: str, weeks: int, answers: Dict[str,Any]) -> Dict[str,Any]:
+    domain = detect_domain_from_topic(topic)
+    base = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
     weeks_list = []
-    for w in range(weeks):
-        day_entries = []
-        for i, day in enumerate(base_days):
-            row_idx = (seed + w*3 + i) % len(modules)
-            row = modules[row_idx]
-            primary = row[i % len(row)]
-            secondary = row[(i+1) % len(row)]
-            token = tokens[(seed + i + w) % len(tokens)]
+    tokens = [w for w in re.split(r'\W+', topic.lower()) if w]
+    seed = sum(ord(c) for c in topic) % 7 if topic else 3
+    for w in range(max(1,weeks)):
+        days = []
+        for i,day in enumerate(base):
+            token = tokens[(seed + i + w) % max(1,len(tokens))] if tokens else "practice"
             if domain == "career":
-                if i % 3 == 0:
-                    topics = [primary, f"Practice: {token} (mock)"]
-                elif i % 3 == 1:
-                    topics = [secondary, "STAR story refinement", f"Action: draft 1 resume bullet about {token}"]
-                else:
-                    topics = ["Mock interview (30-45 min)", "Feedback & notes", f"Company research: {token}"]
+                topics = [f"Mock interview: {token}", "STAR answers", "Resume bullet refinement"]
             elif domain == "dsa":
-                topics = [primary, secondary, f"LeetCode practice: {token}"]
+                topics = [f"Topic concept: {token}", f"Practice problems: {token}", "Speed & pattern drills"]
             elif domain == "ml":
-                topics = [primary, secondary, f"Mini experiment: {token}"]
-            elif domain == "web":
-                topics = [primary, secondary, f"Build: {token} feature"]
-            elif domain == "db":
-                topics = [primary, secondary, f"Design exercise: model {token}"]
-            elif domain == "cv":
-                topics = [primary, secondary, f"Notebook: try task on {token}"]
+                topics = [f"Theory: {token}", f"Notebook experiment: {token}", "Read paper / blog"]
             else:
-                topics = [primary, secondary, f"Practice: {token}"]
-            day_entries.append({"day": day, "topics": topics})
-        weeks_list.append({"days": day_entries})
-    hours = answers.get("hours_per_day", 2)
-    skill = answers.get("skill_level", "beginner")
-    if domain == "career":
-        daily_template = f"{hours} hours/day: 40% practice (mock + problems) • 30% story & resume work • 30% research & interviews"
-        resources = ["Resume templates & review guides","Common behavioral questions + STAR examples","Platforms for mock interviews (Pramp, InterviewBuddy, peers)","System design primers & curated interview lists"]
-    elif domain == "dsa":
-        daily_template = f"{hours} hours/day: 60% problem practice + 30% concept review + 10% mock tests"
-        resources = ["Top LeetCode lists","CLRS / EPI chapters (selected)","Interactive practice: Codeforces/HackerRank"]
-    elif domain == "ml":
-        daily_template = f"{hours} hours/day: theory + experiments + reading (adjust by skill={skill})"
-        resources = ["Practical ML course (Coursera/fast.ai)","Hands-on books & Kaggle notebooks","Model deployment tutorials"]
-    else:
-        daily_template = f"{hours} hours/day: mix of theory + practice + mini project"
-        resources = [f"Intro course about {topic}","YouTube playlists & sample projects","Documentation & official guides"]
-    plan = {"weeks": weeks_list, "daily_template": daily_template, "resources": resources}
-    return plan
+                topics = [f"Learn: {token}", "Practice exercises", "Mini-project task"]
+            days.append({"day": day, "topics": topics})
+        weeks_list.append({"days": days})
+    daily_template = f"{answers.get('hours_per_day',2)} hours/day: mix of theory + practice"
+    resources = [{"title": f"Search: {topic} on YouTube", "url": f"https://www.youtube.com/results?search_query={topic.replace(' ','+')}"}, {"title": f"Search: {topic} on Coursera", "url": f"https://www.coursera.org/search?query={topic.replace(' ','+')}" }]
+    return {"weeks": weeks_list, "daily_template": daily_template, "resources": resources}
 
-def local_create_plan(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
-    created = int(time.time())
-    rec = {"topic": topic.strip() or "Topic","weeks": int(max(1, weeks)),"answers": answers,"plan": build_topic_daylist(topic.strip() or "Topic", int(weeks), answers),"quiz": [],"created_at": created,"source": "local"}
-    return rec
-
-# ---------- improved remote wrapper with retries ----------
-def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
-    """Try remote Groq model(s). If model_not_found occurs, retry with fallback names.
-       Returns remote plan dict or falls back to local_create_plan.
-    """
+# ---------- remote Groq wrapper (LLM) ----------
+def call_groq_api(model_name: str, system_prompt: str, user_prompt: str, max_tokens=1200, temp=0.2) -> Dict[str,Any]:
     api_key = st.secrets.get("API_KEY")
     api_url = st.secrets.get("API_URL")
     if not api_key or not api_url:
-        st.info("No API secrets found — using local generator.")
-        return local_create_plan(uid, topic, weeks, answers)
-
-    # models to attempt: order: secret override -> common fallbacks
-    preferred = st.secrets.get("GROQ_MODEL")
-    candidates = []
-    if preferred:
-        candidates.append(preferred)
-    # sensible fallback list (edit this list if you know your account models)
-    candidates += [
-        "llama-3.1-70b-versatile",
-        "mixtral-8x7b",
-        "llama-3.1-instruct",
-        "mixtral-instruct",
-        "llama-2-13b-chat"
-    ]
-    # remove duplicates while preserving order
-    seen=set(); models=[m for m in candidates if not (m in seen or seen.add(m))]
-
-    system_msg = {"role":"system","content":"You are a helpful assistant that produces structured study plans. Reply with valid JSON only using the schema: {\"topic\":string, \"plan\": {\"weeks\": [{\"days\":[{\"day\":\"Mon\",\"topics\":[...]}, ... ]}, ...], \"daily_template\":string, \"resources\":[...]}}. No extra text."}
-    user_instructions = {"role":"user","content": f"Generate a study plan for topic: \"{topic}\". Weeks: {weeks}. Skill: {answers.get('skill_level')}. Hours per day: {answers.get('hours_per_day')}. Goal: {answers.get('goal')}. Output MUST be JSON matching the schema."}
-
+        raise RuntimeError("No API secrets")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload_base = {"messages": [system_msg, user_instructions], "max_tokens":1200, "temperature":0.2}
+    payload = {"model": model_name, "messages":[{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}], "max_tokens":max_tokens, "temperature":temp}
+    resp = requests.post(api_url, json=payload, headers=headers, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
 
-    last_error_text = None
-    for model_name in models:
-        payload = payload_base.copy()
-        payload["model"] = model_name
-        st.info(f"Trying remote model: {model_name}")
+# generate remote plan (requests JSON-only output with quiz + resources)
+def generate_plan_remote(uid: str, topic: str, weeks: int, answers: Dict[str,Any], debug=False) -> Dict[str,Any]:
+    model = st.secrets.get("GROQ_MODEL") or "llama-3.1-8b-instant"
+    sysp = (
+        "You are a structured plan generator. ALWAYS respond with valid JSON ONLY (no markdown, no explanation). "
+        "Output schema: {\"topic\":string, \"plan\": {\"weeks\": [ {\"days\":[{\"day\":\"Mon\",\"topics\":[...]}, ...] }, ...], \"daily_template\":string, \"resources\":[{\"title\":...,\"url\":...}, ...] }, \"quiz\": [ {\"q\":...,\"options\":[...],\"a\": \"correct option text\"}, ... ] }"
+    )
+    userp = (
+        f"Create a concrete study plan for topic: \"{topic}\". Weeks: {weeks}. Skill: {answers.get('skill_level')}. "
+        f"Hours per day: {answers.get('hours_per_day')}. Goal: {answers.get('goal')}. "
+        "Make topics specific and actionable. Include a short quiz (3 questions) at the end with options and correct answer. "
+        "Also include resource suggestions; for each resource include a reasonable url (youtube search link or official course link if known). Keep JSON compact."
+    )
+    try:
+        data = call_groq_api(model, sysp, userp, max_tokens=1200, temp=0.2)
+        # parse assistant text (OpenAI-like)
+        choices = data.get("choices") if isinstance(data,dict) else None
+        assistant_text = ""
+        if choices and isinstance(choices, list) and choices:
+            assistant_text = choices[0].get("message",{}).get("content","") or choices[0].get("text","")
+        else:
+            # maybe direct json
+            assistant_text = json.dumps(data)
+        # try parse JSON
         try:
-            resp = requests.post(api_url, json=payload, headers=headers, timeout=20)
-            # If response code not 2xx, parse body for model_not_found and decide
-            if resp.status_code >= 400:
-                # try to parse JSON error
-                try:
-                    err = resp.json()
-                    last_error_text = json.dumps(err, indent=2)
-                    # check model_not_found pattern
-                    if isinstance(err, dict):
-                        msg = err.get("error", err).get("message") if isinstance(err.get("error",{}), dict) else str(err)
-                        if msg and "model" in msg and ("does not exist" in msg or "not found" in msg or "not have access" in msg):
-                            st.warning(f"Model {model_name} not found or no access; trying next candidate.")
-                            continue  # try next model
-                except Exception:
-                    last_error_text = resp.text
-                    # crude grep
-                    if "model" in resp.text and ("does not exist" in resp.text or "not found" in resp.text or "not have access" in resp.text):
-                        st.warning(f"Model {model_name} not found (raw). Trying next candidate.")
-                        continue
-                # if error but not model-not-found, show and break (no point retrying)
-                st.error(f"Remote API HTTP error {resp.status_code}: {resp.text}")
-                break
-
-            # success 2xx -> try parse
-            data = resp.json()
-            # OpenAI-like response contains choices
-            plan_obj = None; topic_out = topic
-            if isinstance(data, dict) and "choices" in data:
-                choices = data.get("choices", [])
-                assistant_text = ""
-                if choices and isinstance(choices[0], dict):
-                    assistant_text = choices[0].get("message", {}).get("content", "") or choices[0].get("text", "")
-                # try load assistant_text as JSON
-                try:
-                    parsed = json.loads(assistant_text)
-                    plan_obj = parsed.get("plan") if isinstance(parsed, dict) else None
-                    topic_out = parsed.get("topic", topic) if isinstance(parsed, dict) else topic
-                except Exception:
-                    # extract JSON substring
-                    m = re.search(r'\{.*\}', assistant_text, flags=re.S)
-                    if m:
-                        try:
-                            parsed = json.loads(m.group(0))
-                            plan_obj = parsed.get("plan") if isinstance(parsed, dict) else None
-                            topic_out = parsed.get("topic", topic) if isinstance(parsed, dict) else topic
-                        except Exception:
-                            plan_obj = None
+            parsed = json.loads(assistant_text)
+        except Exception:
+            # extract first JSON-looking substring
+            m = re.search(r'\{[\s\S]*\}', assistant_text)
+            if m:
+                parsed = json.loads(m.group(0))
             else:
-                # direct structured JSON response
-                plan_obj = data.get("plan") if isinstance(data, dict) else None
-                topic_out = data.get("topic", topic) if isinstance(data, dict) else topic
+                raise RuntimeError("Model did not return JSON")
+        # basic validation
+        if not parsed.get("plan"):
+            raise RuntimeError("Remote plan missing 'plan' key")
+        rec = {
+            "topic": parsed.get("topic", topic),
+            "weeks": int(max(1, weeks)),
+            "answers": answers,
+            "plan": parsed.get("plan"),
+            "quiz": parsed.get("quiz", []),
+            "created_at": int(time.time()),
+            "source": f"remote ({model})"
+        }
+        return rec
+    except Exception as e:
+        if debug:
+            st.error(f"Remote generation failed: {e}")
+        raise
 
-            if plan_obj and isinstance(plan_obj, dict):
-                rec = {"topic": topic_out, "weeks": int(max(1, weeks)), "answers": answers, "plan": plan_obj, "quiz": data.get("quiz", [] ) if isinstance(data, dict) else [], "created_at": int(time.time()), "source": f"remote ({model_name})"}
-                st.success(f"Remote plan generated by {model_name} ✓")
-                return rec
-
-            # If we got here, remote returned 200 but couldn't parse a plan
-            st.warning(f"Model {model_name} returned a response but no structured plan could be parsed. Showing response for debugging.")
-            try:
-                st.code(json.dumps(data, indent=2), language="json")
-            except Exception:
-                st.text(resp.text)
-            # try next model if model couldn't produce structured JSON
-            continue
-
-        except requests.HTTPError as e:
-            last_error_text = str(e)
-            st.error(f"Remote API HTTP error for {model_name}: {e}")
-            continue
+# wrapper with fallback & retries; will silently use local if not working unless debug True
+def generate_plan(uid: str, topic: str, weeks: int, answers: Dict[str,Any], debug=False) -> Dict[str,Any]:
+    # try remote if secrets set
+    if st.secrets.get("API_KEY") and st.secrets.get("API_URL"):
+        # attempt once with configured model
+        model = st.secrets.get("GROQ_MODEL") or "llama-3.1-8b-instant"
+        try:
+            return generate_plan_remote(uid, topic, weeks, answers, debug=debug)
         except Exception as e:
-            last_error_text = str(e)
-            st.error(f"Remote request failed for {model_name}: {e}")
-            continue
+            if debug:
+                st.warning(f"Remote failed: {e} — falling back to local.")
+    # fallback local
+    return {"topic": topic, "weeks": int(max(1,weeks)), "answers": answers, "plan": local_plan(topic, weeks, answers), "quiz": [], "created_at": int(time.time()), "source": "local"}
 
-    # exhausted candidates
-    st.error("All remote model attempts failed or produced unusable output.")
-    if last_error_text:
-        st.code(last_error_text, language="json")
-    st.info("Falling back to local generator.")
-    return local_create_plan(uid, topic, weeks, answers)
+# ---------- export helpers ----------
+def make_md_bytes(record: Dict[str,Any]) -> bytes:
+    txt = plan_to_text(record)
+    return txt.encode("utf-8")
 
-# ---------- UI (styles + form + rendering) ----------
-st.set_page_config(page_title="Study Buddy", layout="wide", initial_sidebar_state="expanded")
-st.markdown("""<style>/* minimal styling (same as before) */ .sb-page{display:flex;justify-content:center;padding:20px 0 40px}.sb-container{width:100%;max-width:980px;padding:0 20px}.sb-title{font-size:48px;font-weight:900;margin:4px 0 6px 0;background:linear-gradient(90deg,#00d4ff,#5b7cff,#c86dd7,#ff7abd);background-size:400% 400%;-webkit-background-clip:text;color:transparent;animation:floatGradient 12s ease-in-out infinite;text-shadow:0 6px 18px rgba(0,0,0,0.45)}@keyframes floatGradient{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}.sb-sub{color:#9aa3b2;margin-bottom:18px;font-size:14px}.sb-card{background:rgba(255,255,255,0.02);border-radius:12px;padding:18px 20px;margin-bottom:18px;box-shadow:0 6px 18px rgba(0,0,0,0.45)}.sb-topic{font-size:20px;font-weight:700;margin-bottom:6px;color:#fff}.sb-meta{color:#9aa3b2;margin-bottom:10px;font-size:13px}.sb-week{font-size:15px;font-weight:700;margin-top:12px;margin-bottom:6px}.sb-day{margin-left:14px;margin-bottom:4px;color:#e6eef8}.actions-wrapper{display:flex;align-items:center;gap:10px;margin-top:6px}.actions-pill{background:rgba(255,255,255,0.03);color:#f4f7fb;border-radius:999px;padding:8px 12px;border:1px solid rgba(255,255,255,0.04);cursor:pointer;font-weight:700;display:inline-flex;align-items:center;gap:8px}.actions-dropdown{position:absolute;top:44px;left:0;background:rgba(20,24,28,0.98);border-radius:10px;padding:8px;min-width:200px;box-shadow:0 10px 30px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.03);z-index:9999;display:none;flex-direction:column;gap:6px}.actions-dropdown.show{display:flex}.actions-item{background:transparent;color:#e6eef8;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:600;display:flex;gap:8px;align-items:center}.actions-item:hover{background:rgba(255,255,255,0.02);transform:translateY(-1px)}.stButton>button,.stButton>div>button{border-radius:10px !important;padding:8px 12px !important;font-weight:700 !important}@media (max-width:720px){.sb-title{font-size:36px}.actions-dropdown{left:auto;right:0}}</style>""", unsafe_allow_html=True)
+def make_ics_bytes(record: Dict[str,Any]) -> bytes:
+    # create a simple recurring weekly schedule per plan: each week's Mon->Sun to separate events
+    plan = record.get("plan",{})
+    weeks = plan.get("weeks",[])
+    start = time.gmtime(record.get("created_at", time.time()))
+    dtstart = time.strftime("%Y%m%dT%H%M%SZ", start)
+    # build events for each day in weeks, spaced by week offset
+    ics_lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//StudyBuddy//EN"
+    ]
+    base_date = time.localtime(record.get("created_at", time.time()))
+    # naive: assign each day to consecutive days starting today
+    cur_ts = int(record.get("created_at", time.time()))
+    for w_idx, wk in enumerate(weeks):
+        for d in wk.get("days",[]):
+            start_ts = cur_ts + (w_idx*7*86400)
+            dt = time.gmtime(start_ts)
+            dtstamp = time.strftime("%Y%m%dT%H%M%SZ", dt)
+            uid = f"{record.get('created_at')}-{w_idx}-{d.get('day')}"
+            ics_lines += [
+                "BEGIN:VEVENT",
+                f"UID:{uid}",
+                f"DTSTAMP:{dtstamp}",
+                f"DTSTART:{dtstamp}",
+                f"SUMMARY:{record.get('topic')} — {d.get('day')}",
+                f"DESCRIPTION:{', '.join(d.get('topics',[]))}",
+                "END:VEVENT"
+            ]
+    ics_lines.append("END:VCALENDAR")
+    return ("\n".join(ics_lines)).encode("utf-8")
 
+def make_docx_bytes(record: Dict[str,Any]) -> Optional[bytes]:
+    if not DOCX_AVAILABLE:
+        return None
+    doc = docx.Document()
+    doc.add_heading(f"Study Buddy — {record.get('topic')}", level=1)
+    doc.add_paragraph(plan_to_text(record))
+    bio = io.BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.read()
+
+# ---------- chat assistant (simple) ----------
+def send_chat_message(prompt: str) -> str:
+    model = st.secrets.get("GROQ_MODEL") or "llama-3.1-8b-instant"
+    sysp = "You are a helpful assistant. Reply concisely."
+    data = call_groq_api(model, sysp, prompt, max_tokens=400, temp=0.3)
+    choices = data.get("choices", [])
+    if choices and isinstance(choices[0], dict):
+        return choices[0].get("message",{}).get("content","") or choices[0].get("text","")
+    return str(data)
+
+# ---------- UI (sidebar + controls) ----------
 with st.sidebar:
     st.header("Create Plan")
-    if "topic_input" not in st.session_state:
-        st.session_state["topic_input"] = "machine learning"
-    if "weeks_input" not in st.session_state:
-        st.session_state["weeks_input"] = 2
-    if "skill_input" not in st.session_state:
-        st.session_state["skill_input"] = "beginner"
-    if "hours_input" not in st.session_state:
-        st.session_state["hours_input"] = 2
-    if "goal_input" not in st.session_state:
-        st.session_state["goal_input"] = "Build a small project"
-    if "username_input" not in st.session_state:
-        st.session_state["username_input"] = ""
+    show_debug = st.checkbox("Show debug messages", value=SHOW_DEBUG_DEFAULT, help="Show remote debug banners and errors")
+    view = st.radio("View:", ["Main", "Onboarding", "Chat"], index=0 if st.session_state["view"]=="main" else (1 if st.session_state["view"]=="onboarding" else 2))
+    st.session_state["view"] = "main" if view=="Main" else ("onboarding" if view=="Onboarding" else "chat")
+    st.markdown("---")
+
+    # form inputs
+    if "topic_input" not in st.session_state: st.session_state["topic_input"]="machine learning"
+    if "weeks_input" not in st.session_state: st.session_state["weeks_input"]=2
+    if "skill_input" not in st.session_state: st.session_state["skill_input"]="beginner"
+    if "hours_input" not in st.session_state: st.session_state["hours_input"]=2
+    if "goal_input" not in st.session_state: st.session_state["goal_input"]="Build a small project"
+    if "username_input" not in st.session_state: st.session_state["username_input"]=""
 
     with st.form(key="create_form"):
-        topic = st.text_area("Topic", height=38, key="topic_input")
-        weeks = st.number_input("Weeks", min_value=1, max_value=52, step=1, key="weeks_input")
-        skill_level = st.selectbox("Skill level", ["beginner", "intermediate", "advanced"], key="skill_input")
-        hours_per_day = st.slider("Hours per day", 1, 8, key="hours_input")
-        goal = st.text_area("Goal (short)", height=64, key="goal_input")
-        username = st.text_input("Username (optional)", key="username_input", help="Optional: use same name to keep plans consistent across sessions later.")
+        topic = st.text_area("Topic", key="topic_input", height=38)
+        weeks = st.number_input("Weeks", min_value=1, max_value=52, value=st.session_state["weeks_input"], key="weeks_input")
+        skill_level = st.selectbox("Skill level", ["beginner","intermediate","advanced"], index=["beginner","intermediate","advanced"].index(st.session_state["skill_input"]), key="skill_input")
+        hours_per_day = st.slider("Hours per day", 1, 8, value=st.session_state["hours_input"], key="hours_input")
+        goal = st.text_area("Goal (short)", key="goal_input", height=64)
+        username = st.text_input("Username (optional)", key="username_input", help="Optional: same name keeps plans in session")
         submit = st.form_submit_button("Generate")
 
-# show remote status
-if "API_KEY" in st.secrets and "API_URL" in st.secrets:
-    st.info("Remote generation: ENABLED (using API_KEY + API_URL from secrets).")
-else:
-    st.info("Remote generation: NOT enabled — app will use local generator (no secrets found).")
+# top header / optionally small debug info (hidden unless show_debug)
+st.markdown("<div style='padding:14px 20px;'></div>", unsafe_allow_html=True)
+if show_debug:
+    if st.secrets.get("API_KEY") and st.secrets.get("API_URL"):
+        st.info("Remote generation: ENABLED (using API_KEY + API_URL from secrets).")
+    else:
+        st.info("Remote generation: NOT enabled — will use local generator.")
 
-status_saved = False
+# onboarding page
+if st.session_state["view"] == "onboarding":
+    st.markdown("<div style='max-width:920px;margin:30px auto;'>", unsafe_allow_html=True)
+    st.title("Welcome to Study Buddy")
+    st.write("This app generates topic-aware study plans. Use the sidebar to enter a topic and click Generate.")
+    st.write("Features included in this final version:")
+    st.write("- LLM-powered plan generation (Groq) with local fallback")
+    st.write("- Auto-generated short quiz (3 questions) per plan")
+    st.write("- Resource suggestions with search links (YouTube/Coursera)")
+    st.write("- Export to Markdown, DOCX (if available), and ICS calendar")
+    st.write("- Simple chat assistant (Groq)")
+    st.write("")
+    st.write("Tips:")
+    st.write(" - Put API_KEY and API_URL into Streamlit Secrets to enable remote generation.")
+    st.write(" - If you prefer to keep debug messages hidden, uncheck 'Show debug messages' in the sidebar.")
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+# chat view
+if st.session_state["view"] == "chat":
+    st.title("Assistant (Groq chat)")
+    user_msg = st.text_area("Ask the assistant anything (short prompt)", height=80, key="chat_input")
+    if st.button("Send"):
+        if not user_msg.strip():
+            st.warning("Please write a message.")
+        else:
+            try:
+                resp = send_chat_message(user_msg)
+                st.success("Assistant replied:")
+                st.write(resp)
+                st.session_state["chat_history"].append({"q": user_msg, "a": resp, "ts": int(time.time())})
+            except Exception as e:
+                st.error(f"Chat failed: {e}")
+    if st.session_state["chat_history"]:
+        st.markdown("### Chat history")
+        for m in reversed(st.session_state["chat_history"]):
+            st.markdown(f"**Q:** {m['q']}")
+            st.markdown(f"**A:** {m['a']}")
+            st.markdown("---")
+    st.stop()
+
+# normal main view
+st.markdown("<div style='max-width:1100px;margin:10px auto;'>", unsafe_allow_html=True)
+st.title("Study Buddy")
+st.write("Topic-aware study plans — LLM used when available. (Debug banners are hidden by default.)")
+
+# generate handling
 uid = (st.session_state.get("username_input","").strip() or "session_user")
+status_saved = False
 if submit:
     if not st.session_state.get("topic_input","").strip():
         st.error("Please enter a topic.")
     else:
         answers = {"skill_level": st.session_state.get("skill_input"), "hours_per_day": st.session_state.get("hours_input"), "goal": st.session_state.get("goal_input")}
-        rec = generate_plan_via_api(uid, st.session_state["topic_input"].strip(), int(st.session_state["weeks_input"]), answers)
+        # try remote first; debug mode passes show_debug
+        try:
+            rec = generate_plan(uid, st.session_state["topic_input"].strip(), int(st.session_state["weeks_input"]), answers, debug=show_debug)
+        except Exception as e:
+            if show_debug:
+                st.error(f"Generation error: {e}")
+            rec = {"topic": st.session_state["topic_input"].strip(), "weeks": int(st.session_state["weeks_input"]), "answers": answers, "plan": local_plan(st.session_state["topic_input"].strip(), int(st.session_state["weeks_input"]), answers), "quiz": [], "created_at": int(time.time()), "source": "local"}
         state = get_user_state(uid)
         plans = state.get("plans", [])
+        # replace previous plan so page updates in-place
         if plans:
             plans[0] = rec
         else:
             plans.insert(0, rec)
         state["plans"] = plans
         save_user_state(uid, state)
-        st.success(f"Plan created and saved ✅ (source: {rec.get('source')})")
         status_saved = True
+        # do not show remote trial banners unless debug enabled (user requested)
+        if show_debug:
+            st.success(f"Plan created and saved ✅ (source: {rec.get('source')})")
+        else:
+            # normal UX: concise confirmation
+            st.success("Plan ready ✅")
 
-st.markdown("<div class='sb-page'><div class='sb-container'>", unsafe_allow_html=True)
-st.markdown("<div class='sb-title'>Study Buddy</div>", unsafe_allow_html=True)
-st.markdown("<div class='sb-sub'>Topic-aware study plans — remote API used when available.</div>", unsafe_allow_html=True)
-if status_saved:
-    st.success("Saved to memory.")
-st.markdown("---")
-
-if st.session_state.get("username_input","").strip():
-    st.markdown(f"<div class='sb-meta sb-muted'>Logged as: <strong>{st.session_state.get('username_input')}</strong></div>", unsafe_allow_html=True)
-else:
-    st.markdown(f"<div class='sb-meta sb-muted'>No username provided — plans saved to this browser session only.</div>", unsafe_allow_html=True)
-
+# render saved plans (only one top plan per user)
 state = get_user_state(uid)
 plans = state.get("plans", [])
-
 if not plans:
     st.info("No saved plans yet. Create one from the sidebar.")
 else:
-    for idx, p in enumerate(plans):
-        topic_local = p.get("topic", "Plan")
-        created = int(p.get("created_at", time.time()))
-        answers = p.get("answers", {})
-        plan_data = p.get("plan", {})
-        source = p.get("source", "local")
-        topic_slug = slugify(topic_local)
-        key_base = f"{uid}_{topic_slug}_{created}_{idx}"
-
-        st.markdown("<div class='sb-card'>", unsafe_allow_html=True)
-        st.markdown(f"<div class='sb-topic'>{topic_local}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='sb-meta muted'>saved {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(created))} • source: {source} • weeks: {p.get('weeks')}</div>", unsafe_allow_html=True)
-
-        st.markdown(f"- **Weeks:** {p.get('weeks','—')}  •  **Skill:** {answers.get('skill_level','—')}  •  **Hours/day:** {answers.get('hours_per_day','—')}")
-        if answers.get('goal'):
-            goal_raw = answers.get('goal')
-            goal_display = goal_raw.replace("\n", "  \n")
-            st.markdown(f"- **Goal:** {goal_display}")
+    for idx,p in enumerate(plans):
+        st.markdown("---")
+        st.markdown(f"### {p.get('topic')}")
+        st.markdown(f"_Saved: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(p.get('created_at',time.time())))} • source: {p.get('source')}_")
+        # show meta
+        answers = p.get("answers",{})
+        st.markdown(f"- **Weeks:** {p.get('weeks')}  •  **Skill:** {answers.get('skill_level')}  •  **Hours/day:** {answers.get('hours_per_day')}")
+        if answers.get("goal"):
+            st.markdown(f"- **Goal:** {answers.get('goal')}")
         st.markdown("")
-
-        weeks_list = plan_data.get("weeks", [])
-        for w_i, week in enumerate(weeks_list, start=1):
-            st.markdown(f"<div class='sb-week'>Week {w_i}</div>", unsafe_allow_html=True)
-            for d in week.get("days", []):
-                day_name = d.get("day", "")
-                topics = d.get("topics", [])
-                topics_str = ", ".join(topics) if isinstance(topics, list) else str(topics)
-                st.markdown(f"<div class='sb-day'>• <strong>{day_name}:</strong> {topics_str}</div>", unsafe_allow_html=True)
-            st.markdown("")
-
-        if plan_data.get("daily_template"):
+        # plan weeks
+        weeks_list = p.get("plan",{}).get("weeks",[])
+        for wi, wk in enumerate(weeks_list, start=1):
+            st.markdown(f"**Week {wi}**")
+            for d in wk.get("days",[]):
+                st.markdown(f"- **{d.get('day')}:** {', '.join(d.get('topics',[]))}")
+        # daily template & resources
+        if p.get("plan",{}).get("daily_template"):
             st.markdown("**Daily Template:**")
-            st.markdown(f"- {plan_data.get('daily_template')}")
-        resources = plan_data.get("resources", [])
-        if resources:
-            st.markdown("**Recommended Resources:**")
-            for r in resources:
-                st.markdown(f"- {r}")
+            st.write(p.get("plan",{}).get("daily_template"))
+        if p.get("plan",{}).get("resources"):
+            st.markdown("**Resources:**")
+            for r in p.get("plan",{}).get("resources"):
+                title = r.get("title") if isinstance(r,dict) else str(r)
+                url = r.get("url") if isinstance(r,dict) else None
+                if url:
+                    st.markdown(f"- [{title}]({url})")
+                else:
+                    st.markdown(f"- {title}")
+        # quiz (if any)
+        if p.get("quiz"):
+            st.markdown("**Quiz:**")
+            for i,q in enumerate(p.get("quiz",[]), start=1):
+                st.markdown(f"{i}. {q.get('q')}")
+                opts = q.get('options',[])
+                for oi,opt in enumerate(opts, start=1):
+                    st.markdown(f"   - ({oi}) {opt}")
+            st.markdown("_Answers are hidden in UI; export to view solutions._")
+        # actions: download md/docx/ics, copy plan
+        col1,col2,col3,col4 = st.columns([0.28,0.28,0.28,0.16])
+        with col1:
+            md_bytes = make_md_bytes(p)
+            b64 = base64.b64encode(md_bytes).decode()
+            href = f"data:application/octet-stream;base64,{b64}"
+            st.markdown(f"[Download .md]({href})")
+        with col2:
+            docx_bytes = make_docx_bytes(p)
+            if docx_bytes:
+                b64 = base64.b64encode(docx_bytes).decode()
+                href = f"data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,{b64}"
+                st.markdown(f"[Download .docx]({href})")
+            else:
+                st.markdown("DOCX not available (optional).")
+        with col3:
+            ics_bytes = make_ics_bytes(p)
+            b64 = base64.b64encode(ics_bytes).decode()
+            href = f"data:text/calendar;base64,{b64}"
+            st.markdown(f"[Download .ics calendar]({href})")
+        with col4:
+            plan_text = plan_to_text(p)
+            if st.button("Copy plan", key=f"copy_{idx}"):
+                st.experimental_set_query_params()  # no-op to avoid warnings
+                st.session_state["_clip"] = plan_text
+                st.success("Plan copied to session — use clipboard method in browser.")
+        st.markdown("---")
 
-        pdf_data_uri = None
-        if REPORTLAB_AVAILABLE:
-            try:
-                pdf_bytes = generate_pdf_bytes_platypus(f"Study Buddy — {topic_local}", p)
-                b64 = base64.b64encode(pdf_bytes).decode("ascii")
-                pdf_data_uri = f"data:application/pdf;base64,{b64}"
-            except Exception:
-                pdf_data_uri = None
+st.markdown("</div>", unsafe_allow_html=True)
 
-        plan_text = plan_to_text(p)
-        plan_js_safe = escape(plan_text).replace("\\", "\\\\").replace("`", "\\`").replace("\n","\\n").replace("\r","")
+# hide debug banners by default: show only if user enabled show_debug
+if show_debug:
+    st.info("Debug mode ON — remote errors and trial messages are visible above.")
+else:
+    # remove any leftover st.info/warning prints by not printing them; debugging only via sidebar toggle
+    pass
 
-        col_left, col_right = st.columns([0.92, 0.08])
-        with col_left:
-            actions_html = f"""
-            <div class="actions-wrapper" style="position:relative">
-              <div class="actions-menu">
-                <div class="actions-pill" id="pill_{key_base}">Actions ▾</div>
-                <div class="actions-dropdown" id="menu_{key_base}">
-                  <button class="actions-item" id="menu_download_{key_base}"><span class="icon">📄</span> Download PDF</button>
-                  <button class="actions-item" id="menu_copy_{key_base}"><span class="icon">📋</span> Copy Plan</button>
-                </div>
-              </div>
-            </div>
-
-            <script>
-            (function(){{
-              const pill = document.getElementById("pill_{key_base}");
-              const menu = document.getElementById("menu_{key_base}");
-              pill.addEventListener("click", (e) => {{ e.stopPropagation(); menu.classList.toggle("show"); }});
-              document.addEventListener("click", () => {{ menu.classList.remove("show"); }});
-              menu.addEventListener("click", (e) => {{ e.stopPropagation(); }});
-
-              const dl = document.getElementById("menu_download_{key_base}");
-              dl.addEventListener("click", () => {{
-                const uri = { ('"' + pdf_data_uri + '"') if pdf_data_uri else 'null' };
-                if (uri) {{
-                    const a = document.createElement('a');
-                    a.href = uri;
-                    a.download = "{topic_slug}_plan_{created}.pdf";
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                }} else {{
-                    alert('PDF not available. Ensure reportlab is installed.');
-                }}
-                menu.classList.remove('show');
-              }});
-
-              const copyBtn = document.getElementById("menu_copy_{key_base}");
-              copyBtn.addEventListener("click", async () => {{
-                try {{
-                    await navigator.clipboard.writeText(`{plan_js_safe}`);
-                    copyBtn.innerText = 'Copied ✓';
-                    setTimeout(()=>{{ copyBtn.innerText = 'Copy Plan'; }}, 1400);
-                }} catch(e) {{
-                    window.prompt('Copy plan text (Ctrl/Cmd+C):', `{plan_js_safe}`);
-                }}
-                menu.classList.remove('show');
-              }});
-            }})();
-            </script>
-            """
-            components.html(actions_html, height=80, scrolling=False)
-        with col_right:
-            st.write("")
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("---", unsafe_allow_html=True)
-
-st.markdown("<div class='sb-muted'>Tip: add a username to persist plans across sessions (future feature).</div>", unsafe_allow_html=True)
-st.markdown("</div></div>", unsafe_allow_html=True)
+# footer small
+st.markdown("<div style='padding:8px 0 40px;'></div>", unsafe_allow_html=True)
