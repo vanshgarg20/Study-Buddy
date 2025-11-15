@@ -1,4 +1,4 @@
-# app.py - Final Study Buddy (remote API integration + local fallback)
+# app.py - Final Study Buddy (Groq LLM integration + local fallback)
 # Requirements: pip install streamlit requests reportlab
 import re
 import time
@@ -301,45 +301,122 @@ def local_create_plan(uid: str, topic: str, weeks: int, answers: Dict[str, Any])
     return rec
 
 # -------------------------
-# Remote API wrapper (uses st.secrets["API_KEY"] and st.secrets["API_URL"])
+# Robust remote API wrapper (Groq OpenAI-compatible)
 def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
     api_key = st.secrets.get("API_KEY")
     api_url = st.secrets.get("API_URL")
     if not api_key or not api_url:
-        # no secret — use local generator
+        st.info("No API secrets found — using local generator.")
         return local_create_plan(uid, topic, weeks, answers)
 
-    # attempt remote call
-    payload = {"topic": topic, "weeks": int(weeks), "answers": answers, "uid": uid}
+    model_name = st.secrets.get("GROQ_MODEL", "llama-3.1-chat")
+
+    system_msg = {
+        "role": "system",
+        "content": (
+            "You are a helpful assistant that produces structured study plans. "
+            "Always reply with valid JSON only, using the exact schema specified below. "
+            "Do NOT include any extra explanation or markdown, only JSON."
+        )
+    }
+
+    user_instructions = {
+        "role": "user",
+        "content": (
+            f"Generate a study plan for topic: \"{topic}\". Weeks: {weeks}. Skill: {answers.get('skill_level')}. "
+            f"Hours per day: {answers.get('hours_per_day')}. Goal: {answers.get('goal')}. "
+            "Output MUST be valid JSON with this structure:\n\n"
+            '{\n'
+            '  "topic": string,\n'
+            '  "plan": {\n'
+            '    "weeks": [\n'
+            '      { "days": [ { "day": "Mon|Tue|...", "topics": ["topic1","topic2", ...] }, ... ] },\n'
+            '      ...\n'
+            '    ],\n'
+            '    "daily_template": string,\n'
+            '    "resources": [ "resource1", "resource2", ... ]\n'
+            '  }\n'
+            '}\n\n'
+            "Make the topics concrete and domain-specific (not generic words). Keep strings short."
+        )
+    }
+
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model_name,
+        "messages": [system_msg, user_instructions],
+        "max_tokens": 1200,
+        "temperature": 0.2
+    }
+
     try:
-        resp = requests.post(api_url, json=payload, headers=headers, timeout=12)
+        resp = requests.post(api_url, json=payload, headers=headers, timeout=20)
         resp.raise_for_status()
         data = resp.json()
-        # Expect: data["plan"] is structured dict. If not present, fallback.
-        plan_obj = data.get("plan")
-        if not plan_obj or not isinstance(plan_obj, dict):
-            # if API returned structured top-level fields, try to normalize:
-            # Some APIs may return {"result": {"plan": {...}}}
-            if "result" in data and isinstance(data["result"], dict) and "plan" in data["result"]:
-                plan_obj = data["result"]["plan"]
+
+        # parse OpenAI-like choices or direct JSON
+        plan_obj = None
+        topic_out = topic
+
+        if isinstance(data, dict) and "choices" in data:
+            choices = data.get("choices", [])
+            if choices and isinstance(choices[0], dict):
+                assistant_text = choices[0].get("message", {}).get("content", "") or choices[0].get("text", "")
+            else:
+                assistant_text = ""
+            # try parse assistant_text as JSON
+            try:
+                parsed = json.loads(assistant_text)
+                plan_obj = parsed.get("plan") if isinstance(parsed, dict) else None
+                topic_out = parsed.get("topic", topic) if isinstance(parsed, dict) else topic
+            except Exception:
+                # extract json substring
+                import re
+                m = re.search(r'\{.*\}', assistant_text, flags=re.S)
+                if m:
+                    try:
+                        parsed = json.loads(m.group(0))
+                        plan_obj = parsed.get("plan") if isinstance(parsed, dict) else None
+                        topic_out = parsed.get("topic", topic) if isinstance(parsed, dict) else topic
+                    except Exception:
+                        plan_obj = None
+                        topic_out = topic
+                else:
+                    plan_obj = None
+                    topic_out = topic
+        else:
+            # direct structured response
+            plan_obj = data.get("plan") if isinstance(data, dict) else None
+            topic_out = data.get("topic", topic) if isinstance(data, dict) else topic
+
         if plan_obj and isinstance(plan_obj, dict):
             rec = {
-                "topic": data.get("topic", topic),
+                "topic": topic_out,
                 "weeks": int(max(1, weeks)),
                 "answers": answers,
                 "plan": plan_obj,
-                "quiz": data.get("quiz", []),
+                "quiz": data.get("quiz", []) if isinstance(data, dict) else [],
                 "created_at": int(time.time()),
                 "source": "remote"
             }
             return rec
-        # otherwise fallback
-        st.warning("Remote API returned no structured plan — using local fallback.")
+
+        # Debug output if couldn't parse structured plan
+        st.warning("Remote API returned response but could not parse structured plan. Showing response for debugging.")
+        try:
+            st.code(json.dumps(data, indent=2), language="json")
+        except Exception:
+            st.text("Raw response:")
+            st.text(resp.text)
     except requests.HTTPError as e:
-        st.error(f"Remote API HTTP error: {e}")
+        try:
+            st.error(f"Remote API HTTP error: {e} — response: {resp.text}")
+        except Exception:
+            st.error(f"Remote API HTTP error: {e}")
     except Exception as e:
         st.error(f"Remote API request failed: {e}")
+
+    st.info("Falling back to local generator.")
     return local_create_plan(uid, topic, weeks, answers)
 
 # -------------------------
@@ -409,7 +486,6 @@ if submit:
         st.error("Please enter a topic.")
     else:
         answers = {"skill_level": st.session_state.get("skill_input"), "hours_per_day": st.session_state.get("hours_input"), "goal": st.session_state.get("goal_input")}
-        # Try remote first (if secrets present) otherwise fallback to local
         rec = generate_plan_via_api(uid, st.session_state["topic_input"].strip(), int(st.session_state["weeks_input"]), answers)
         state = get_user_state(uid)
         plans = state.get("plans", [])
