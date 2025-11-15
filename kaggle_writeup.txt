@@ -1,0 +1,57 @@
+Title: Study Buddy — AI Study Plan & Quiz Agent
+Subtitle: A Concierge agent that builds personalized study plans, generates quizzes, and remembers progress.
+
+Track: Concierge Agents
+
+Thumbnail: (attach a screenshot or simple graphic showing the agent output)
+
+Problem statement
+College students waste time planning and preparing study schedules. Study Buddy automates planning: it asks clarifying questions, builds a weekly study plan tailored to the learner's hours & goals, generates a short quiz for practice, and stores the plan in memory for follow-up sessions.
+
+Approach & architecture
+- LLM-powered core: uses an LLM (OpenAI) to ask clarifying questions, synthesize multi-week plans, and generate quizzes.
+- Tools: a web_search tool (mocked in demo; replace with SerpAPI for live results) and quiz-generation via LLM (executed through controlled prompts).
+- Memory: user plans and sessions saved in `memory.json` (long-term memory).
+- Observability: all LLM calls and key steps logged to `logs/log.jsonl`.
+- Evaluation: an automated harness runs multiple test prompts and reports a simple heuristic score (completeness, clarity, resources).
+
+Key files
+- `agent.py` — orchestrates flows (follow-ups, plan synthesis, quiz generation, saving to memory).
+- `tools.py` — web search (mocked) and quiz prompt helpers.
+- `memory_manager.py` — read/write memory.
+- `logger.py` — logs events for observability.
+- `evaluator.py` — runs a small test suite and writes evaluation results.
+
+How it demonstrates course concepts
+1. Agent powered by an LLM — all planning & question generation uses the LLM.
+2. Tools — `web_search` (tool abstraction) and `generate_quiz` (tool-like behavior).
+3. Sessions & Memory — plans are saved in `memory.json` for later retrieval and follow-up.
+4. Observability — logs for LLM calls and agent events are written to `logs/log.jsonl`.
+5. Agent evaluation — `evaluator.py` produces test-case-based scores and an aggregate.
+
+How to reproduce (run instructions)
+1. Install requirements: `pip install -r requirements.txt`.
+2. Set `OPENAI_API_KEY` in environment.
+3. Run `python demo_runner.py` to create a sample plan.
+4. Run `python evaluator.py` to execute the evaluation harness.
+
+Evaluation results
+- The included evaluator runs three test prompts, producing heuristic scores for each plan and an average summary saved as JSON. Use this as a baseline; a user study would provide stronger evidence.
+
+Limitations
+- The web_search tool is mocked; replace with SerpAPI for real web references.
+- The evaluation is heuristic and manual; ideally run user studies / A/B tests or automated quiz scoring with real users.
+- Deployment is optional and not required for submission; a Streamlit UI or hosted API would be natural next steps.
+
+Next steps
+- Integrate real search API and citations pipeline.
+- Add a UI (Streamlit / FastAPI) to collect real user answers to follow-up questions.
+- Longer-term memory (vector DB) and more advanced personalization.
+
+Repository
+- Public GitHub / Kaggle Notebook link: (paste your repo or notebook URL here)
+
+Video demo (optional)
+- A 1-2 minute screen recording showing: running demo_runner → viewing saved plan in memory.json → running evaluator → viewing logs.
+
+Thank you — this project is intentionally minimal and robust so you can run and adapt it quickly for the Kaggle Capstone submission.

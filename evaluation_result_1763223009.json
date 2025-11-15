@@ -1,0 +1,37 @@
+{
+  "results": [
+    {
+      "user_id": "eval_user_1",
+      "topic": "Linear Algebra basics",
+      "scores": {
+        "completeness": 1,
+        "clarity": 2,
+        "resources": 1
+      }
+    },
+    {
+      "user_id": "eval_user_2",
+      "topic": "Intro to Python",
+      "scores": {
+        "completeness": 1,
+        "clarity": 2,
+        "resources": 1
+      }
+    },
+    {
+      "user_id": "eval_user_3",
+      "topic": "Probability for ML",
+      "scores": {
+        "completeness": 1,
+        "clarity": 2,
+        "resources": 1
+      }
+    }
+  ],
+  "aggregate": {
+    "count": 3,
+    "avg_completeness": 1.0,
+    "avg_clarity": 2.0,
+    "avg_resources": 1.0
+  }
+}
