@@ -1,4 +1,4 @@
-# app.py - Final Study Buddy (resources rendering fix)
+# app.py - Final Study Buddy (resources as plain text, tighter spacing, Plan ready ✅)
 # Requirements: pip install streamlit requests reportlab
 import re
 import time
@@ -84,11 +84,10 @@ def plan_to_text(record: Dict[str, Any]) -> str:
     if plan.get("resources"):
         lines.append("Recommended Resources:")
         for r in plan.get("resources", []):
-            # reuse the same safe-formatting used in UI
+            # reuse the same safe-formatting used in UI (title only)
             if isinstance(r, dict):
                 title = r.get("title") or r.get("name") or str(r)
-                url = r.get("url") or r.get("link") or ""
-                lines.append(f"  - {title} — {url}")
+                lines.append(f"  - {title}")
             else:
                 lines.append(f"  - {r}")
     return "\n".join(lines)
@@ -135,7 +134,12 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     if resources:
         story.append(Paragraph("<b>Recommended Resources:</b>", heading_style))
         for r in resources:
-            story.append(Paragraph(f"• {escape(str(r))}", bullet_style))
+            # include only title text in PDF as well
+            if isinstance(r, dict):
+                title = r.get("title") or r.get("name") or str(r)
+            else:
+                title = str(r)
+            story.append(Paragraph(f"• {escape(title)}", bullet_style))
         story.append(Spacer(1, 6))
     doc.build(story)
     buffer.seek(0)
@@ -312,7 +316,24 @@ def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, A
 
 # ---------- UI (styles + form + rendering) ----------
 st.set_page_config(page_title="Study Buddy", layout="wide", initial_sidebar_state="expanded")
-st.markdown("""<style>/* minimal styling (same as before) */ .sb-page{display:flex;justify-content:center;padding:20px 0 40px}.sb-container{width:100%;max-width:980px;padding:0 20px}.sb-title{font-size:48px;font-weight:900;margin:4px 0 6px 0;background:linear-gradient(90deg,#00d4ff,#5b7cff,#c86dd7,#ff7abd);background-size:400% 400%;-webkit-background-clip:text;color:transparent;animation:floatGradient 12s ease-in-out infinite;text-shadow:0 6px 18px rgba(0,0,0,0.45)}@keyframes floatGradient{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}.sb-sub{color:#9aa3b2;margin-bottom:18px;font-size:14px}.sb-card{background:rgba(255,255,255,0.02);border-radius:12px;padding:18px 20px;margin-bottom:18px;box-shadow:0 6px 18px rgba(0,0,0,0.45)}.sb-topic{font-size:20px;font-weight:700;margin-bottom:6px;color:#fff}.sb-meta{color:#9aa3b2;margin-bottom:10px;font-size:13px}.sb-week{font-size:15px;font-weight:700;margin-top:12px;margin-bottom:6px}.sb-day{margin-left:14px;margin-bottom:4px;color:#e6eef8}.actions-wrapper{display:flex;align-items:center;gap:10px;margin-top:6px}.actions-pill{background:rgba(255,255,255,0.03);color:#f4f7fb;border-radius:999px;padding:8px 12px;border:1px solid rgba(255,255,255,0.04);cursor:pointer;font-weight:700;display:inline-flex;align-items:center;gap:8px}.actions-dropdown{position:absolute;top:44px;left:0;background:rgba(20,24,28,0.98);border-radius:10px;padding:8px;min-width:200px;box-shadow:0 10px 30px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.03);z-index:9999;display:none;flex-direction:column;gap:6px}.actions-dropdown.show{display:flex}.actions-item{background:transparent;color:#e6eef8;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:600;display:flex;gap:8px;align-items:center}.actions-item:hover{background:rgba(255,255,255,0.02);transform:translateY(-1px)}.stButton>button,.stButton>div>button{border-radius:10px !important;padding:8px 12px !important;font-weight:700 !important}@media (max-width:720px){.sb-title{font-size:36px}.actions-dropdown{left:auto;right:0}}</style>""", unsafe_allow_html=True)
+st.markdown("""<style>
+/* tightened spacing */
+.sb-page{display:flex;justify-content:center;padding:12px 0 20px}
+.sb-container{width:100%;max-width:980px;padding:0 16px}
+.sb-title{font-size:44px;font-weight:900;margin:2px 0 8px 0;background:linear-gradient(90deg,#00d4ff,#5b7cff,#c86dd7,#ff7abd);background-size:400% 400%;-webkit-background-clip:text;color:transparent;animation:floatGradient 12s ease-in-out infinite;text-shadow:0 6px 18px rgba(0,0,0,0.45)}
+@keyframes floatGradient{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+.sb-sub{color:#9aa3b2;margin-bottom:12px;font-size:14px}
+.sb-card{background:rgba(255,255,255,0.02);border-radius:10px;padding:14px 16px;margin-bottom:12px;box-shadow:0 6px 18px rgba(0,0,0,0.45)}
+.sb-topic{font-size:18px;font-weight:800;margin-bottom:6px;color:#fff}
+.sb-meta{color:#9aa3b2;margin-bottom:8px;font-size:13px}
+.sb-week{font-size:14px;font-weight:700;margin-top:10px;margin-bottom:6px}
+.sb-day{margin-left:12px;margin-bottom:4px;color:#e6eef8}
+.actions-wrapper{display:flex;align-items:center;gap:8px;margin-top:6px}
+.actions-pill{background:rgba(255,255,255,0.03);color:#f4f7fb;border-radius:999px;padding:6px 10px;border:1px solid rgba(255,255,255,0.04);cursor:pointer;font-weight:700;display:inline-flex;align-items:center;gap:8px}
+.actions-dropdown{position:absolute;top:40px;left:0;background:rgba(20,24,28,0.98);border-radius:10px;padding:6px;min-width:180px;box-shadow:0 10px 30px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.03);z-index:9999;display:none;flex-direction:column;gap:6px}
+.actions-dropdown.show{display:flex}.actions-item{background:transparent;color:#e6eef8;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:600;display:flex;gap:8px;align-items:center}.actions-item:hover{background:rgba(255,255,255,0.02);transform:translateY(-1px)}.stButton>button,.stButton>div>button{border-radius:10px !important;padding:8px 12px !important;font-weight:700 !important}
+@media (max-width:720px){.sb-title{font-size:32px}.actions-dropdown{left:auto;right:0}}
+</style>""", unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("Create Plan")
@@ -354,7 +375,8 @@ if submit:
             plans.insert(0, rec)
         state["plans"] = plans
         save_user_state(uid, state)
-        st.success("Plan ready ✓")
+        # changed here: use emoji ✅ as requested
+        st.success("Plan ready ✅")
         status_saved = True
 
 st.markdown("<div class='sb-page'><div class='sb-container'>", unsafe_allow_html=True)
@@ -407,7 +429,7 @@ def normalize_resource(item):
             title_candidate = re.sub(r"https?://[^\s'\"<>]+", "", s).strip()
             title = title_candidate or url
             return title, url
-        # otherwise treat it as a plain title and build a youtube search link
+        # otherwise treat it as a plain title and build a youtube search link (but we'll only use title in UI)
         title = s
         url = f"https://www.youtube.com/results?search_query={re.sub(r'\\s+', '+', title)}"
         return title, url
@@ -453,17 +475,12 @@ else:
         resources = plan_data.get("resources", [])
         if resources:
             st.markdown("**Recommended Resources:**")
+            # show only titles (no clickable links) as requested
             for r in resources:
                 title, url = normalize_resource(r)
                 title = title or "Resource"
-                # if no url returned, create a Google search fallback
-                if not url:
-                    fallback_query = quote_plus(str(title))
-                    url = f"https://www.google.com/search?q={fallback_query}"
                 safe_title = escape(str(title))
-                safe_url = escape(str(url))
-                # render clickable anchor that opens in new tab
-                st.markdown(f'- <a href="{safe_url}" target="_blank" rel="noreferrer">{safe_title}</a>', unsafe_allow_html=True)
+                st.markdown(f"- {safe_title}")
 
         pdf_data_uri = None
         if REPORTLAB_AVAILABLE:
@@ -528,7 +545,7 @@ else:
             }})();
             </script>
             """
-            components.html(actions_html, height=80, scrolling=False)
+            components.html(actions_html, height=72, scrolling=False)
         with col_right:
             st.write("")
         st.markdown("</div>", unsafe_allow_html=True)
