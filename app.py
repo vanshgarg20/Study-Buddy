@@ -216,10 +216,10 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     for w_i, week in enumerate(weeks_list, start=1):
     st.markdown(f"<div class='sb-week'>Week {w_i}</div>", unsafe_allow_html=True)
 
-    # force show Mon -> Sun in UI (fill missing days with Rest / Catch-up)
-    desired_days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+    # Force Mon → Sun
+    desired_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-    # build map day-short -> topics
+    # Map actual plan days to short form (Mon → Mon, Monday → Mon)
     day_map_ui = {}
     for d in week.get("days", []):
         name = (d.get("day") or "").strip()
@@ -229,13 +229,23 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     for dd in desired_days:
         topics = day_map_ui.get(dd)
         if topics:
-            topics_str = safe_topics(topics)
-            st.markdown(f"<div class='sb-day'>• <strong>{dd}:</strong> {escape(topics_str)}</div>", unsafe_allow_html=True)
+            # safe topic join
+            if isinstance(topics, list):
+                topics_str = ", ".join(str(x) for x in topics)
+            else:
+                topics_str = str(topics)
+            st.markdown(
+                f"<div class='sb-day'>• <strong>{dd}:</strong> {escape(topics_str)}</div>",
+                unsafe_allow_html=True
+            )
         else:
-            st.markdown(f"<div class='sb-day'>• <strong>{dd}:</strong> Rest / Catch-up / Self-study</div>", unsafe_allow_html=True)
+            # Missing → put Rest Day
+            st.markdown(
+                f"<div class='sb-day'>• <strong>{dd}:</strong> Rest / Catch-up / Self-study</div>",
+                unsafe_allow_html=True
+            )
 
-    st.markdown("")  # small spacer between weeks
-
+    st.markdown("")  # spacing after each week
 
 # ---------- domain modules ----------
 DOMAIN_MODULES = {
