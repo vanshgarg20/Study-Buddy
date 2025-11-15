@@ -55,6 +55,24 @@ def slugify(s: Optional[str]) -> str:
     s = re.sub(r'__+', '_', s).strip('_')
     return s or "item"
 
+def safe_topics(t):
+    """
+    Robust formatter for 'topics' that may be:
+      - list of strings
+      - dict
+      - string
+      - None
+      - other types
+    Returns a plain string safe to display.
+    """
+    if isinstance(t, list):
+        return ", ".join(str(x) for x in t)
+    if isinstance(t, dict):
+        return ", ".join(f"{k}: {v}" for k, v in t.items())
+    if t is None:
+        return "—"
+    return str(t)
+
 def plan_to_text(record: Dict[str, Any]) -> str:
     lines: List[str] = []
     lines.append(f"Study Buddy — Plan: {record.get('topic','')}")
@@ -74,7 +92,7 @@ def plan_to_text(record: Dict[str, Any]) -> str:
         for d in week.get("days", []):
             day_name = d.get("day", "")
             topics = d.get("topics", [])
-            topics_str = ", ".join(topics) if isinstance(topics, list) else str(topics)
+            topics_str = safe_topics(topics)
             lines.append(f"  - {day_name}: {topics_str}")
         lines.append("")
     if plan.get("daily_template"):
@@ -187,16 +205,6 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     week_list = plan.get("weeks", [])
 
     desired_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-    def safe_topics(t):
-        if isinstance(t, list):
-            return ", ".join(str(x) for x in t)
-        if isinstance(t, dict):
-            # join k: v pairs
-            return ", ".join(f"{k}: {v}" for k, v in t.items())
-        if t is None:
-            return "—"
-        return str(t)
 
     for w_i, week in enumerate(week_list, start=1):
         story.append(Paragraph(f"Week {w_i}", heading_style))
@@ -479,7 +487,7 @@ if submit:
 
 st.markdown("<div class='sb-page'><div class='sb-container'>", unsafe_allow_html=True)
 st.markdown("<div class='sb-title'>Study Buddy</div>", unsafe_allow_html=True)
-st.markdown("<div class='sb-sub'>Personalized study plans tuned to your topic — remote AI boosts suggestions when accessible.🥸</div>", unsafe_allow_html=True)
+st.markdown("<div class='sb-sub'>Personalized study plans tuned to your topic — remote AI boosts suggestions when accessible.</div>", unsafe_allow_html=True)
 if status_saved:
     st.success("Saved to memory.")
 st.markdown("---")
@@ -563,8 +571,8 @@ else:
             for d in week.get("days", []):
                 day_name = d.get("day", "")
                 topics = d.get("topics", [])
-                topics_str = ", ".join(topics) if isinstance(topics, list) else str(topics)
-                st.markdown(f"<div class='sb-day'>• <strong>{day_name}:</strong> {topics_str}</div>", unsafe_allow_html=True)
+                topics_str = safe_topics(topics)
+                st.markdown(f"<div class='sb-day'>• <strong>{day_name}:</strong> {escape(topics_str)}</div>", unsafe_allow_html=True)
             st.markdown("")
 
         if plan_data.get("daily_template"):
