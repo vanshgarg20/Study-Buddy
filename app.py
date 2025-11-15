@@ -1,4 +1,4 @@
-# app.py - Final Study Buddy (Groq LLM integration + local fallback)
+# app.py - Final Study Buddy (Groq retry-on-model-not-found + local fallback)
 # Requirements: pip install streamlit requests reportlab
 import re
 import time
@@ -23,8 +23,7 @@ try:
 except Exception:
     REPORTLAB_AVAILABLE = False
 
-# -------------------------
-# session state for plans
+# ---------- session state ----------
 if "demo_state" not in st.session_state:
     st.session_state["demo_state"] = {"plans": []}
 
@@ -34,8 +33,7 @@ def get_user_state(uid: str) -> Dict[str, Any]:
 def save_user_state(uid: str, state: Dict[str, Any]) -> None:
     st.session_state["demo_state"] = state
 
-# -------------------------
-# helpers
+# ---------- helpers ----------
 STOPWORDS = {"and","the","of","in","for","to","with","a","an","on","by","&","&amp;","is","this"}
 
 def clean_tokens(topic: str) -> List[str]:
@@ -87,8 +85,7 @@ def plan_to_text(record: Dict[str, Any]) -> str:
             lines.append(f"  - {r}")
     return "\n".join(lines)
 
-# -------------------------
-# PDF helper (optional)
+# ---------- PDF helper ----------
 def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     if not REPORTLAB_AVAILABLE:
         raise RuntimeError("reportlab not installed")
@@ -136,70 +133,19 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     buffer.seek(0)
     return buffer.read()
 
-# -------------------------
-# Domain modules (career included)
+# ---------- domain modules ----------
 DOMAIN_MODULES = {
-    "dsa": [
-        ["Arrays","Strings","Two Pointers"],
-        ["Linked Lists","Stacks","Queues"],
-        ["Trees","BST","Trie"],
-        ["Graphs","BFS/DFS","Shortest Paths"],
-        ["Sorting","Searching","Hashing"],
-        ["Dynamic Programming","Greedy","Backtracking"]
-    ],
-    "ml": [
-        ["Math & Linear Algebra","Probability","Statistics"],
-        ["Supervised Learning","Regression","Classification"],
-        ["Neural Networks","CNNs","RNNs"],
-        ["Optimization","Loss Functions","Regularization"],
-        ["Deployment","Model Serving","Monitoring"],
-        ["Advanced Topics","Transformers","Self-supervised"]
-    ],
-    "web": [
-        ["HTML & CSS","DOM","Accessibility"],
-        ["JavaScript Basics","ES6+","DOM Manipulation"],
-        ["Frontend Framework","React/Vue","State Management"],
-        ["Backend Basics","APIs","Databases"],
-        ["Auth & Security","Testing","Deployment"],
-        ["Performance","Caching","Scaling"]
-    ],
-    "db": [
-        ["RDBMS Basics","SQL Queries","Joins"],
-        ["Indexes","Query Optimization","Transactions"],
-        ["NoSQL Basics","Document Stores","Key-Value DB"],
-        ["Data Modeling","Normalization","Denormalization"],
-        ["Replication","Sharding","Backup/Restore"],
-        ["Analytics","OLAP","Data Warehousing"]
-    ],
-    "cv": [
-        ["Image Processing","Filters","Transforms"],
-        ["Classical CV","Features","SIFT/ORB"],
-        ["Deep CV","CNNs","Object Detection"],
-        ["Segmentation","Keypoints","Pose Estimation"],
-        ["Data Augmentation","Training Tricks","Transfer Learning"],
-        ["Deployment","Edge Models","Optimization"]
-    ],
-    "career": [
-        ["Resume & Profile","Formatting","Keywords"],
-        ["Behavioral Questions","STAR Method","Story Crafting"],
-        ["Mock Interviews","Problem Solving","Pair Practice"],
-        ["Company Research","Role Mapping","Expectations"],
-        ["System Design / Case Study","High-level Thinking","Trade-offs"],
-        ["Negotiation & HR","Offer Review","Salary Discussion"]
-    ],
-    "default": [
-        ["Introduction","Core Concepts","Motivation"],
-        ["Tools & Setup","Libraries","Environment"],
-        ["Core Algorithms","Patterns","Practice"],
-        ["Mini-project","Integration","Testing"],
-        ["Optimization","Scaling","Evaluation"],
-        ["Advanced Concepts","Papers","Further Reading"]
-    ]
+    "dsa":[["Arrays","Strings","Two Pointers"],["Linked Lists","Stacks","Queues"],["Trees","BST","Trie"],["Graphs","BFS/DFS","Shortest Paths"],["Sorting","Searching","Hashing"],["Dynamic Programming","Greedy","Backtracking"]],
+    "ml":[["Math & Linear Algebra","Probability","Statistics"],["Supervised Learning","Regression","Classification"],["Neural Networks","CNNs","RNNs"],["Optimization","Loss Functions","Regularization"],["Deployment","Model Serving","Monitoring"],["Advanced Topics","Transformers","Self-supervised"]],
+    "web":[["HTML & CSS","DOM","Accessibility"],["JavaScript Basics","ES6+","DOM Manipulation"],["Frontend Framework","React/Vue","State Management"],["Backend Basics","APIs","Databases"],["Auth & Security","Testing","Deployment"],["Performance","Caching","Scaling"]],
+    "db":[["RDBMS Basics","SQL Queries","Joins"],["Indexes","Query Optimization","Transactions"],["NoSQL Basics","Document Stores","Key-Value DB"],["Data Modeling","Normalization","Denormalization"],["Replication","Sharding","Backup/Restore"],["Analytics","OLAP","Data Warehousing"]],
+    "cv":[["Image Processing","Filters","Transforms"],["Classical CV","Features","SIFT/ORB"],["Deep CV","CNNs","Object Detection"],["Segmentation","Keypoints","Pose Estimation"],["Data Augmentation","Training Tricks","Transfer Learning"],["Deployment","Edge Models","Optimization"]],
+    "career":[["Resume & Profile","Formatting","Keywords"],["Behavioral Questions","STAR Method","Story Crafting"],["Mock Interviews","Problem Solving","Pair Practice"],["Company Research","Role Mapping","Expectations"],["System Design / Case Study","High-level Thinking","Trade-offs"],["Negotiation & HR","Offer Review","Salary Discussion"]],
+    "default":[["Introduction","Core Concepts","Motivation"],["Tools & Setup","Libraries","Environment"],["Core Algorithms","Patterns","Practice"],["Mini-project","Integration","Testing"],["Optimization","Scaling","Evaluation"],["Advanced Concepts","Papers","Further Reading"]]
 }
 
 def detect_domain(tokens: List[str]) -> str:
     tset = set(tokens)
-    # career/soft-skills heuristics
     if any(x in tset for x in ("interview","interviews","resume","cv","cvresume","behavioural","behavioral","behavior","soft","skill","skills","communication","story","portfolio","networking","negotiation","salary","hr","offer","mock")):
         return "career"
     if any(x in tset for x in ("dsa","ds","data","structure","structures","algorithm","algorithms","algo")):
@@ -214,7 +160,6 @@ def detect_domain(tokens: List[str]) -> str:
         return "cv"
     return "default"
 
-# build topic-aware day list using modules
 def build_topic_daylist(topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
     weeks = max(1, int(weeks))
     tokens = clean_tokens(topic)
@@ -252,201 +197,153 @@ def build_topic_daylist(topic: str, weeks: int, answers: Dict[str, Any]) -> Dict
                 topics = [primary, secondary, f"Practice: {token}"]
             day_entries.append({"day": day, "topics": topics})
         weeks_list.append({"days": day_entries})
-    # domain-tuned daily templates & resources
     hours = answers.get("hours_per_day", 2)
     skill = answers.get("skill_level", "beginner")
     if domain == "career":
         daily_template = f"{hours} hours/day: 40% practice (mock + problems) • 30% story & resume work • 30% research & interviews"
-        resources = [
-            "Resume templates & review guides",
-            "Common behavioral questions + STAR examples",
-            "Platforms for mock interviews (Pramp, InterviewBuddy, peers)",
-            "System design primers & curated interview lists"
-        ]
+        resources = ["Resume templates & review guides","Common behavioral questions + STAR examples","Platforms for mock interviews (Pramp, InterviewBuddy, peers)","System design primers & curated interview lists"]
     elif domain == "dsa":
         daily_template = f"{hours} hours/day: 60% problem practice + 30% concept review + 10% mock tests"
-        resources = [
-            "Top LeetCode lists",
-            "CLRS / EPI chapters (selected)",
-            "Interactive practice: Codeforces/HackerRank"
-        ]
+        resources = ["Top LeetCode lists","CLRS / EPI chapters (selected)","Interactive practice: Codeforces/HackerRank"]
     elif domain == "ml":
         daily_template = f"{hours} hours/day: theory + experiments + reading (adjust by skill={skill})"
-        resources = [
-            "Practical ML course (Coursera/fast.ai)",
-            "Hands-on books & Kaggle notebooks",
-            "Model deployment tutorials"
-        ]
+        resources = ["Practical ML course (Coursera/fast.ai)","Hands-on books & Kaggle notebooks","Model deployment tutorials"]
     else:
         daily_template = f"{hours} hours/day: mix of theory + practice + mini project"
-        resources = [
-            f"Intro course about {topic}",
-            "YouTube playlists & sample projects",
-            "Documentation & official guides"
-        ]
+        resources = [f"Intro course about {topic}","YouTube playlists & sample projects","Documentation & official guides"]
     plan = {"weeks": weeks_list, "daily_template": daily_template, "resources": resources}
     return plan
 
 def local_create_plan(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
     created = int(time.time())
-    rec = {
-        "topic": topic.strip() or "Topic",
-        "weeks": int(max(1, weeks)),
-        "answers": answers,
-        "plan": build_topic_daylist(topic.strip() or "Topic", int(weeks), answers),
-        "quiz": [],
-        "created_at": created,
-        "source": "local"
-    }
+    rec = {"topic": topic.strip() or "Topic","weeks": int(max(1, weeks)),"answers": answers,"plan": build_topic_daylist(topic.strip() or "Topic", int(weeks), answers),"quiz": [],"created_at": created,"source": "local"}
     return rec
 
-# -------------------------
-# Robust remote API wrapper (Groq OpenAI-compatible)
+# ---------- improved remote wrapper with retries ----------
 def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
+    """Try remote Groq model(s). If model_not_found occurs, retry with fallback names.
+       Returns remote plan dict or falls back to local_create_plan.
+    """
     api_key = st.secrets.get("API_KEY")
     api_url = st.secrets.get("API_URL")
     if not api_key or not api_url:
         st.info("No API secrets found — using local generator.")
         return local_create_plan(uid, topic, weeks, answers)
 
-    model_name = st.secrets.get("GROQ_MODEL", "llama-3.1-chat")
+    # models to attempt: order: secret override -> common fallbacks
+    preferred = st.secrets.get("GROQ_MODEL")
+    candidates = []
+    if preferred:
+        candidates.append(preferred)
+    # sensible fallback list (edit this list if you know your account models)
+    candidates += [
+        "llama-3.1-70b-versatile",
+        "mixtral-8x7b",
+        "llama-3.1-instruct",
+        "mixtral-instruct",
+        "llama-2-13b-chat"
+    ]
+    # remove duplicates while preserving order
+    seen=set(); models=[m for m in candidates if not (m in seen or seen.add(m))]
 
-    system_msg = {
-        "role": "system",
-        "content": (
-            "You are a helpful assistant that produces structured study plans. "
-            "Always reply with valid JSON only, using the exact schema specified below. "
-            "Do NOT include any extra explanation or markdown, only JSON."
-        )
-    }
-
-    user_instructions = {
-        "role": "user",
-        "content": (
-            f"Generate a study plan for topic: \"{topic}\". Weeks: {weeks}. Skill: {answers.get('skill_level')}. "
-            f"Hours per day: {answers.get('hours_per_day')}. Goal: {answers.get('goal')}. "
-            "Output MUST be valid JSON with this structure:\n\n"
-            '{\n'
-            '  "topic": string,\n'
-            '  "plan": {\n'
-            '    "weeks": [\n'
-            '      { "days": [ { "day": "Mon|Tue|...", "topics": ["topic1","topic2", ...] }, ... ] },\n'
-            '      ...\n'
-            '    ],\n'
-            '    "daily_template": string,\n'
-            '    "resources": [ "resource1", "resource2", ... ]\n'
-            '  }\n'
-            '}\n\n'
-            "Make the topics concrete and domain-specific (not generic words). Keep strings short."
-        )
-    }
+    system_msg = {"role":"system","content":"You are a helpful assistant that produces structured study plans. Reply with valid JSON only using the schema: {\"topic\":string, \"plan\": {\"weeks\": [{\"days\":[{\"day\":\"Mon\",\"topics\":[...]}, ... ]}, ...], \"daily_template\":string, \"resources\":[...]}}. No extra text."}
+    user_instructions = {"role":"user","content": f"Generate a study plan for topic: \"{topic}\". Weeks: {weeks}. Skill: {answers.get('skill_level')}. Hours per day: {answers.get('hours_per_day')}. Goal: {answers.get('goal')}. Output MUST be JSON matching the schema."}
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": model_name,
-        "messages": [system_msg, user_instructions],
-        "max_tokens": 1200,
-        "temperature": 0.2
-    }
+    payload_base = {"messages": [system_msg, user_instructions], "max_tokens":1200, "temperature":0.2}
 
-    try:
-        resp = requests.post(api_url, json=payload, headers=headers, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
+    last_error_text = None
+    for model_name in models:
+        payload = payload_base.copy()
+        payload["model"] = model_name
+        st.info(f"Trying remote model: {model_name}")
+        try:
+            resp = requests.post(api_url, json=payload, headers=headers, timeout=20)
+            # If response code not 2xx, parse body for model_not_found and decide
+            if resp.status_code >= 400:
+                # try to parse JSON error
+                try:
+                    err = resp.json()
+                    last_error_text = json.dumps(err, indent=2)
+                    # check model_not_found pattern
+                    if isinstance(err, dict):
+                        msg = err.get("error", err).get("message") if isinstance(err.get("error",{}), dict) else str(err)
+                        if msg and "model" in msg and ("does not exist" in msg or "not found" in msg or "not have access" in msg):
+                            st.warning(f"Model {model_name} not found or no access; trying next candidate.")
+                            continue  # try next model
+                except Exception:
+                    last_error_text = resp.text
+                    # crude grep
+                    if "model" in resp.text and ("does not exist" in resp.text or "not found" in resp.text or "not have access" in resp.text):
+                        st.warning(f"Model {model_name} not found (raw). Trying next candidate.")
+                        continue
+                # if error but not model-not-found, show and break (no point retrying)
+                st.error(f"Remote API HTTP error {resp.status_code}: {resp.text}")
+                break
 
-        # parse OpenAI-like choices or direct JSON
-        plan_obj = None
-        topic_out = topic
-
-        if isinstance(data, dict) and "choices" in data:
-            choices = data.get("choices", [])
-            if choices and isinstance(choices[0], dict):
-                assistant_text = choices[0].get("message", {}).get("content", "") or choices[0].get("text", "")
-            else:
+            # success 2xx -> try parse
+            data = resp.json()
+            # OpenAI-like response contains choices
+            plan_obj = None; topic_out = topic
+            if isinstance(data, dict) and "choices" in data:
+                choices = data.get("choices", [])
                 assistant_text = ""
-            # try parse assistant_text as JSON
+                if choices and isinstance(choices[0], dict):
+                    assistant_text = choices[0].get("message", {}).get("content", "") or choices[0].get("text", "")
+                # try load assistant_text as JSON
+                try:
+                    parsed = json.loads(assistant_text)
+                    plan_obj = parsed.get("plan") if isinstance(parsed, dict) else None
+                    topic_out = parsed.get("topic", topic) if isinstance(parsed, dict) else topic
+                except Exception:
+                    # extract JSON substring
+                    m = re.search(r'\{.*\}', assistant_text, flags=re.S)
+                    if m:
+                        try:
+                            parsed = json.loads(m.group(0))
+                            plan_obj = parsed.get("plan") if isinstance(parsed, dict) else None
+                            topic_out = parsed.get("topic", topic) if isinstance(parsed, dict) else topic
+                        except Exception:
+                            plan_obj = None
+            else:
+                # direct structured JSON response
+                plan_obj = data.get("plan") if isinstance(data, dict) else None
+                topic_out = data.get("topic", topic) if isinstance(data, dict) else topic
+
+            if plan_obj and isinstance(plan_obj, dict):
+                rec = {"topic": topic_out, "weeks": int(max(1, weeks)), "answers": answers, "plan": plan_obj, "quiz": data.get("quiz", [] ) if isinstance(data, dict) else [], "created_at": int(time.time()), "source": f"remote ({model_name})"}
+                st.success(f"Remote plan generated by {model_name} ✓")
+                return rec
+
+            # If we got here, remote returned 200 but couldn't parse a plan
+            st.warning(f"Model {model_name} returned a response but no structured plan could be parsed. Showing response for debugging.")
             try:
-                parsed = json.loads(assistant_text)
-                plan_obj = parsed.get("plan") if isinstance(parsed, dict) else None
-                topic_out = parsed.get("topic", topic) if isinstance(parsed, dict) else topic
+                st.code(json.dumps(data, indent=2), language="json")
             except Exception:
-                # extract json substring
-                import re
-                m = re.search(r'\{.*\}', assistant_text, flags=re.S)
-                if m:
-                    try:
-                        parsed = json.loads(m.group(0))
-                        plan_obj = parsed.get("plan") if isinstance(parsed, dict) else None
-                        topic_out = parsed.get("topic", topic) if isinstance(parsed, dict) else topic
-                    except Exception:
-                        plan_obj = None
-                        topic_out = topic
-                else:
-                    plan_obj = None
-                    topic_out = topic
-        else:
-            # direct structured response
-            plan_obj = data.get("plan") if isinstance(data, dict) else None
-            topic_out = data.get("topic", topic) if isinstance(data, dict) else topic
+                st.text(resp.text)
+            # try next model if model couldn't produce structured JSON
+            continue
 
-        if plan_obj and isinstance(plan_obj, dict):
-            rec = {
-                "topic": topic_out,
-                "weeks": int(max(1, weeks)),
-                "answers": answers,
-                "plan": plan_obj,
-                "quiz": data.get("quiz", []) if isinstance(data, dict) else [],
-                "created_at": int(time.time()),
-                "source": "remote"
-            }
-            return rec
+        except requests.HTTPError as e:
+            last_error_text = str(e)
+            st.error(f"Remote API HTTP error for {model_name}: {e}")
+            continue
+        except Exception as e:
+            last_error_text = str(e)
+            st.error(f"Remote request failed for {model_name}: {e}")
+            continue
 
-        # Debug output if couldn't parse structured plan
-        st.warning("Remote API returned response but could not parse structured plan. Showing response for debugging.")
-        try:
-            st.code(json.dumps(data, indent=2), language="json")
-        except Exception:
-            st.text("Raw response:")
-            st.text(resp.text)
-    except requests.HTTPError as e:
-        try:
-            st.error(f"Remote API HTTP error: {e} — response: {resp.text}")
-        except Exception:
-            st.error(f"Remote API HTTP error: {e}")
-    except Exception as e:
-        st.error(f"Remote API request failed: {e}")
-
+    # exhausted candidates
+    st.error("All remote model attempts failed or produced unusable output.")
+    if last_error_text:
+        st.code(last_error_text, language="json")
     st.info("Falling back to local generator.")
     return local_create_plan(uid, topic, weeks, answers)
 
-# -------------------------
-# UI + styles
+# ---------- UI (styles + form + rendering) ----------
 st.set_page_config(page_title="Study Buddy", layout="wide", initial_sidebar_state="expanded")
-st.markdown("""
-<style>
-.sb-page{display:flex;justify-content:center;padding:20px 0 40px}
-.sb-container{width:100%;max-width:980px;padding:0 20px}
-.sb-title{font-size:48px;font-weight:900;margin:4px 0 6px 0;background:linear-gradient(90deg,#00d4ff,#5b7cff,#c86dd7,#ff7abd);background-size:400% 400%;-webkit-background-clip:text;color:transparent;animation:floatGradient 12s ease-in-out infinite;text-shadow:0 6px 18px rgba(0,0,0,0.45)}
-@keyframes floatGradient{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
-.sb-sub{color:#9aa3b2;margin-bottom:18px;font-size:14px}
-.sb-card{background:rgba(255,255,255,0.02);border-radius:12px;padding:18px 20px;margin-bottom:18px;box-shadow:0 6px 18px rgba(0,0,0,0.45)}
-.sb-topic{font-size:20px;font-weight:700;margin-bottom:6px;color:#fff}
-.sb-meta{color:#9aa3b2;margin-bottom:10px;font-size:13px}
-.sb-week{font-size:15px;font-weight:700;margin-top:12px;margin-bottom:6px}
-.sb-day{margin-left:14px;margin-bottom:4px;color:#e6eef8}
-.actions-wrapper{display:flex;align-items:center;gap:10px;margin-top:6px}
-.actions-pill{background:rgba(255,255,255,0.03);color:#f4f7fb;border-radius:999px;padding:8px 12px;border:1px solid rgba(255,255,255,0.04);cursor:pointer;font-weight:700;display:inline-flex;align-items:center;gap:8px}
-.actions-dropdown{position:absolute;top:44px;left:0;background:rgba(20,24,28,0.98);border-radius:10px;padding:8px;min-width:200px;box-shadow:0 10px 30px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.03);z-index:9999;display:none;flex-direction:column;gap:6px}
-.actions-dropdown.show{display:flex}
-.actions-item{background:transparent;color:#e6eef8;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:600;display:flex;gap:8px;align-items:center}
-.actions-item:hover{background:rgba(255,255,255,0.02);transform:translateY(-1px)}
-.stButton>button,.stButton>div>button{border-radius:10px !important;padding:8px 12px !important;font-weight:700 !important}
-@media (max-width:720px){.sb-title{font-size:36px}.actions-dropdown{left:auto;right:0}}
-</style>
-""", unsafe_allow_html=True)
+st.markdown("""<style>/* minimal styling (same as before) */ .sb-page{display:flex;justify-content:center;padding:20px 0 40px}.sb-container{width:100%;max-width:980px;padding:0 20px}.sb-title{font-size:48px;font-weight:900;margin:4px 0 6px 0;background:linear-gradient(90deg,#00d4ff,#5b7cff,#c86dd7,#ff7abd);background-size:400% 400%;-webkit-background-clip:text;color:transparent;animation:floatGradient 12s ease-in-out infinite;text-shadow:0 6px 18px rgba(0,0,0,0.45)}@keyframes floatGradient{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}.sb-sub{color:#9aa3b2;margin-bottom:18px;font-size:14px}.sb-card{background:rgba(255,255,255,0.02);border-radius:12px;padding:18px 20px;margin-bottom:18px;box-shadow:0 6px 18px rgba(0,0,0,0.45)}.sb-topic{font-size:20px;font-weight:700;margin-bottom:6px;color:#fff}.sb-meta{color:#9aa3b2;margin-bottom:10px;font-size:13px}.sb-week{font-size:15px;font-weight:700;margin-top:12px;margin-bottom:6px}.sb-day{margin-left:14px;margin-bottom:4px;color:#e6eef8}.actions-wrapper{display:flex;align-items:center;gap:10px;margin-top:6px}.actions-pill{background:rgba(255,255,255,0.03);color:#f4f7fb;border-radius:999px;padding:8px 12px;border:1px solid rgba(255,255,255,0.04);cursor:pointer;font-weight:700;display:inline-flex;align-items:center;gap:8px}.actions-dropdown{position:absolute;top:44px;left:0;background:rgba(20,24,28,0.98);border-radius:10px;padding:8px;min-width:200px;box-shadow:0 10px 30px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.03);z-index:9999;display:none;flex-direction:column;gap:6px}.actions-dropdown.show{display:flex}.actions-item{background:transparent;color:#e6eef8;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:600;display:flex;gap:8px;align-items:center}.actions-item:hover{background:rgba(255,255,255,0.02);transform:translateY(-1px)}.stButton>button,.stButton>div>button{border-radius:10px !important;padding:8px 12px !important;font-weight:700 !important}@media (max-width:720px){.sb-title{font-size:36px}.actions-dropdown{left:auto;right:0}}</style>""", unsafe_allow_html=True)
 
-# -------------------------
-# Sidebar form (session-state safe)
 with st.sidebar:
     st.header("Create Plan")
     if "topic_input" not in st.session_state:
@@ -471,14 +368,12 @@ with st.sidebar:
         username = st.text_input("Username (optional)", key="username_input", help="Optional: use same name to keep plans consistent across sessions later.")
         submit = st.form_submit_button("Generate")
 
-# Show small status: remote available?
+# show remote status
 if "API_KEY" in st.secrets and "API_URL" in st.secrets:
     st.info("Remote generation: ENABLED (using API_KEY + API_URL from secrets).")
 else:
     st.info("Remote generation: NOT enabled — app will use local generator (no secrets found).")
 
-# -------------------------
-# Generate (use remote if possible, else local)
 status_saved = False
 uid = (st.session_state.get("username_input","").strip() or "session_user")
 if submit:
@@ -489,7 +384,6 @@ if submit:
         rec = generate_plan_via_api(uid, st.session_state["topic_input"].strip(), int(st.session_state["weeks_input"]), answers)
         state = get_user_state(uid)
         plans = state.get("plans", [])
-        # Replace existing plan at index 0 (so only one saved plan per user)
         if plans:
             plans[0] = rec
         else:
@@ -499,8 +393,6 @@ if submit:
         st.success(f"Plan created and saved ✅ (source: {rec.get('source')})")
         status_saved = True
 
-# -------------------------
-# Header + render plans (copy & download only)
 st.markdown("<div class='sb-page'><div class='sb-container'>", unsafe_allow_html=True)
 st.markdown("<div class='sb-title'>Study Buddy</div>", unsafe_allow_html=True)
 st.markdown("<div class='sb-sub'>Topic-aware study plans — remote API used when available.</div>", unsafe_allow_html=True)
@@ -532,7 +424,6 @@ else:
         st.markdown(f"<div class='sb-topic'>{topic_local}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='sb-meta muted'>saved {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(created))} • source: {source} • weeks: {p.get('weeks')}</div>", unsafe_allow_html=True)
 
-        # meta & goal
         st.markdown(f"- **Weeks:** {p.get('weeks','—')}  •  **Skill:** {answers.get('skill_level','—')}  •  **Hours/day:** {answers.get('hours_per_day','—')}")
         if answers.get('goal'):
             goal_raw = answers.get('goal')
@@ -540,7 +431,6 @@ else:
             st.markdown(f"- **Goal:** {goal_display}")
         st.markdown("")
 
-        # weeks
         weeks_list = plan_data.get("weeks", [])
         for w_i, week in enumerate(weeks_list, start=1):
             st.markdown(f"<div class='sb-week'>Week {w_i}</div>", unsafe_allow_html=True)
@@ -551,7 +441,6 @@ else:
                 st.markdown(f"<div class='sb-day'>• <strong>{day_name}:</strong> {topics_str}</div>", unsafe_allow_html=True)
             st.markdown("")
 
-        # daily template & resources
         if plan_data.get("daily_template"):
             st.markdown("**Daily Template:**")
             st.markdown(f"- {plan_data.get('daily_template')}")
@@ -561,7 +450,6 @@ else:
             for r in resources:
                 st.markdown(f"- {r}")
 
-        # Prepare PDF data URI (if available)
         pdf_data_uri = None
         if REPORTLAB_AVAILABLE:
             try:
@@ -574,7 +462,6 @@ else:
         plan_text = plan_to_text(p)
         plan_js_safe = escape(plan_text).replace("\\", "\\\\").replace("`", "\\`").replace("\n","\\n").replace("\r","")
 
-        # Actions: copy + download (no delete)
         col_left, col_right = st.columns([0.92, 0.08])
         with col_left:
             actions_html = f"""
@@ -596,7 +483,6 @@ else:
               document.addEventListener("click", () => {{ menu.classList.remove("show"); }});
               menu.addEventListener("click", (e) => {{ e.stopPropagation(); }});
 
-              // Download
               const dl = document.getElementById("menu_download_{key_base}");
               dl.addEventListener("click", () => {{
                 const uri = { ('"' + pdf_data_uri + '"') if pdf_data_uri else 'null' };
@@ -613,7 +499,6 @@ else:
                 menu.classList.remove('show');
               }});
 
-              // Copy
               const copyBtn = document.getElementById("menu_copy_{key_base}");
               copyBtn.addEventListener("click", async () => {{
                 try {{
@@ -630,10 +515,9 @@ else:
             """
             components.html(actions_html, height=80, scrolling=False)
         with col_right:
-            st.write("")  # alignment
+            st.write("")
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("---", unsafe_allow_html=True)
 
-# footer
 st.markdown("<div class='sb-muted'>Tip: add a username to persist plans across sessions (future feature).</div>", unsafe_allow_html=True)
 st.markdown("</div></div>", unsafe_allow_html=True)
