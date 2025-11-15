@@ -99,7 +99,7 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
 
     buffer = io.BytesIO()
 
-    # Clean professional margins
+    # Professional margins
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
@@ -180,22 +180,35 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
 
     story.append(Spacer(1, 10))
 
-    # Weeks plan
+    # Weeks plan (force Mon-Sun)
     story.append(Paragraph("<b>Study Plan</b>", heading_style))
 
     plan = record.get("plan", {})
     week_list = plan.get("weeks", [])
 
+    desired_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
     for w_i, week in enumerate(week_list, start=1):
         story.append(Paragraph(f"Week {w_i}", heading_style))
 
+        # build mapping from day name -> topics for quick lookup
+        day_map = {}
         for d in week.get("days", []):
-            day_name = escape(d.get("day", ""))
-            topics = d.get("topics", [])
-            topics_str = escape(", ".join(topics)) if isinstance(topics, list) else escape(str(topics))
-            story.append(Paragraph(f"• <b>{day_name}:</b> {topics_str}", bullet_style))
+            name = (d.get("day") or "").strip()
+            # normalize short names (e.g., "Monday" -> "Mon")
+            nm = name[:3].title() if name else ""
+            day_map[nm] = d.get("topics", [])
 
-        story.append(Spacer(1, 6))
+        for dd in desired_days:
+            topics = day_map.get(dd)
+            if topics:
+                topics_str = escape(", ".join(topics) if isinstance(topics, list) else str(topics))
+                story.append(Paragraph(f"• <b>{dd}:</b> {topics_str}", bullet_style))
+            else:
+                # clear note for missing days
+                story.append(Paragraph(f"• <b>{dd}:</b> Rest / Catch-up / Self-study", bullet_style))
+
+        story.append(Spacer(1, 8))
 
     # Daily template
     daily_template = plan.get("daily_template")
@@ -204,7 +217,7 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
         story.append(Paragraph(escape(daily_template), body_style))
         story.append(Spacer(1, 8))
 
-    # Resources (titles only, formal)
+    # Resources (titles only)
     resources = plan.get("resources", [])
     if resources:
         story.append(Paragraph("<b>Recommended Resources</b>", heading_style))
@@ -219,7 +232,6 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     doc.build(story)
     buffer.seek(0)
     return buffer.read()
-
 
 # ---------- domain modules ----------
 DOMAIN_MODULES = {
