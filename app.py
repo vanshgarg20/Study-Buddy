@@ -1,4 +1,4 @@
-# app.py - Final Study Buddy (clean UI; no debug banners)
+# app.py - Final Study Buddy (resources rendering fix)
 # Requirements: pip install streamlit requests reportlab
 import re
 import time
@@ -6,6 +6,7 @@ import io
 import base64
 import hashlib
 import json
+import ast
 from typing import Dict, Any, List, Optional
 from html import escape
 
@@ -82,7 +83,13 @@ def plan_to_text(record: Dict[str, Any]) -> str:
     if plan.get("resources"):
         lines.append("Recommended Resources:")
         for r in plan.get("resources", []):
-            lines.append(f"  - {r}")
+            # reuse the same safe-formatting used in UI
+            if isinstance(r, dict):
+                title = r.get("title") or r.get("name") or str(r)
+                url = r.get("url") or r.get("link") or ""
+                lines.append(f"  - {title} — {url}")
+            else:
+                lines.append(f"  - {r}")
     return "\n".join(lines)
 
 # ---------- PDF helper ----------
@@ -201,16 +208,22 @@ def build_topic_daylist(topic: str, weeks: int, answers: Dict[str, Any]) -> Dict
     skill = answers.get("skill_level", "beginner")
     if domain == "career":
         daily_template = f"{hours} hours/day: 40% practice (mock + problems) • 30% story & resume work • 30% research & interviews"
-        resources = ["Resume templates & review guides","Common behavioral questions + STAR examples","Platforms for mock interviews (Pramp, InterviewBuddy, peers)","System design primers & curated interview lists"]
+        resources = [{"name":"Resume templates & review guides","link": "https://example.com/resume-templates"},
+                     {"name":"Common behavioral Q&A (STAR examples)","link":"https://example.com/star-examples"},
+                     {"name":"Mock interview platforms (Pramp, InterviewBuddy)","link":"https://www.pramp.com/"}]
     elif domain == "dsa":
         daily_template = f"{hours} hours/day: 60% problem practice + 30% concept review + 10% mock tests"
-        resources = ["Top LeetCode lists","CLRS / EPI chapters (selected)","Interactive practice: Codeforces/HackerRank"]
+        resources = [{"name":"Top LeetCode lists","link":"https://leetcode.com/explore/featured/card/top-interview-questions/"},
+                     {"name":"CLRS / EPI chapters (selected)","link":"https://en.wikipedia.org/wiki/Introduction_to_Algorithms"},
+                     {"name":"Interactive practice: Codeforces","link":"https://codeforces.com/"}]
     elif domain == "ml":
         daily_template = f"{hours} hours/day: theory + experiments + reading (adjust by skill={skill})"
-        resources = ["Practical ML course (Coursera/fast.ai)","Hands-on books & Kaggle notebooks","Model deployment tutorials"]
+        resources = [{"name":"Practical ML course (Coursera/fast.ai)","link":"https://www.coursera.org/"},
+                     {"name":"Kaggle notebooks & tutorials","link":"https://www.kaggle.com/"},
+                     {"name":"Model deployment tutorials","link":"https://www.tensorflow.org/serving"}]
     else:
         daily_template = f"{hours} hours/day: mix of theory + practice + mini project"
-        resources = [f"Intro course about {topic}","YouTube playlists & sample projects","Documentation & official guides"]
+        resources = [f"Intro course about {topic}", f"YouTube playlists for {topic}", "Documentation & official guides"]
     plan = {"weeks": weeks_list, "daily_template": daily_template, "resources": resources}
     return plan
 
@@ -219,15 +232,11 @@ def local_create_plan(uid: str, topic: str, weeks: int, answers: Dict[str, Any])
     rec = {"topic": topic.strip() or "Topic","weeks": int(max(1, weeks)),"answers": answers,"plan": build_topic_daylist(topic.strip() or "Topic", int(weeks), answers),"quiz": [],"created_at": created,"source": "local"}
     return rec
 
-# ---------- improved remote wrapper with retries (NO UI banners) ----------
+# ---------- improved remote wrapper with retries (silent) ----------
 def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
-    """Try remote Groq model(s). If model_not_found occurs, retry with fallback names.
-       Quiet on the UI (no st.info/warning/error). Returns remote plan dict or falls back to local_create_plan.
-    """
     api_key = st.secrets.get("API_KEY")
     api_url = st.secrets.get("API_URL")
     if not api_key or not api_url:
-        # no remote credentials - use local generator quietly
         return local_create_plan(uid, topic, weeks, answers)
 
     preferred = st.secrets.get("GROQ_MODEL")
@@ -250,7 +259,6 @@ def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, A
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload_base = {"messages": [system_msg, user_instructions], "max_tokens":1200, "temperature":0.2}
 
-    last_error_text = None
     for model_name in models:
         payload = payload_base.copy()
         payload["model"] = model_name
@@ -259,18 +267,12 @@ def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, A
             if resp.status_code >= 400:
                 try:
                     err = resp.json()
-                    last_error_text = json.dumps(err, indent=2)
-                    if isinstance(err, dict):
-                        msg = err.get("error", err).get("message") if isinstance(err.get("error",{}), dict) else str(err)
-                        if msg and "model" in msg and ("does not exist" in msg or "not found" in msg or "not have access" in msg):
-                            # model not found/no access -> try next model (quiet)
-                            continue
+                    msg = err.get("error", {}).get("message") if isinstance(err, dict) else str(err)
+                    if msg and "model" in msg and ("does not exist" in msg or "not found" in msg or "not have access" in msg):
+                        continue
                 except Exception:
-                    last_error_text = resp.text
                     if "model" in resp.text and ("does not exist" in resp.text or "not found" in resp.text or "not have access" in resp.text):
                         continue
-                # other HTTP error - do not show on UI; break out to fallback
-                last_error_text = resp.text
                 break
 
             data = resp.json()
@@ -300,16 +302,11 @@ def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, A
             if plan_obj and isinstance(plan_obj, dict):
                 rec = {"topic": topic_out, "weeks": int(max(1, weeks)), "answers": answers, "plan": plan_obj, "quiz": data.get("quiz", [] ) if isinstance(data, dict) else [], "created_at": int(time.time()), "source": f"remote ({model_name})"}
                 return rec
-
-            # couldn't parse -> try next model silently
             continue
 
-        except Exception as e:
-            last_error_text = str(e)
-            # try next model quietly
+        except Exception:
             continue
 
-    # exhausted or remote failed -> fallback quietly to local generator
     return local_create_plan(uid, topic, weeks, answers)
 
 # ---------- UI (styles + form + rendering) ----------
@@ -340,8 +337,6 @@ with st.sidebar:
         username = st.text_input("Username (optional)", key="username_input", help="Optional: use same name to keep plans consistent across sessions later.")
         submit = st.form_submit_button("Generate")
 
-# NOTE: status banners removed — silent by default
-
 status_saved = False
 uid = (st.session_state.get("username_input","").strip() or "session_user")
 if submit:
@@ -358,7 +353,6 @@ if submit:
             plans.insert(0, rec)
         state["plans"] = plans
         save_user_state(uid, state)
-        # single clean UI message
         st.success("Plan ready ✓")
         status_saved = True
 
@@ -376,6 +370,48 @@ else:
 
 state = get_user_state(uid)
 plans = state.get("plans", [])
+
+# ---------- helper to normalize resource items ----------
+def normalize_resource(item):
+    """
+    Accepts:
+      - dicts like {'title':..,'url':..} or {'name':..,'link':..}
+      - strings (plain URL or title)
+      - stringified dicts (\"{'name':'X','link':'http...'}\")
+    Returns (title, url_or_none)
+    """
+    # dict case
+    if isinstance(item, dict):
+        title = item.get("title") or item.get("name") or item.get("label") or str(item)
+        url = item.get("url") or item.get("link") or item.get("href") or None
+        return title, url
+    # string case - try to parse stringified dict
+    if isinstance(item, str):
+        s = item.strip()
+        # attempt safe literal_eval if it looks like a dict
+        if (s.startswith("{") and s.endswith("}")) or ("'link'" in s or '"link"' in s or "'url'" in s):
+            try:
+                parsed = ast.literal_eval(s)
+                if isinstance(parsed, dict):
+                    title = parsed.get("title") or parsed.get("name") or str(parsed)
+                    url = parsed.get("url") or parsed.get("link") or None
+                    return title, url
+            except Exception:
+                pass
+        # if the string contains http(s) use it as url
+        m = re.search(r"(https?://[^\s'\"<>]+)", s)
+        if m:
+            url = m.group(1)
+            # try to extract a human title from before URL or just use the URL
+            title_candidate = re.sub(r"https?://[^\s'\"<>]+", "", s).strip()
+            title = title_candidate or url
+            return title, url
+        # otherwise treat it as a plain title and build a youtube search link
+        title = s
+        url = f"https://www.youtube.com/results?search_query={re.sub(r'\\s+', '+', title)}"
+        return title, url
+    # otherwise fallback
+    return str(item), None
 
 if not plans:
     st.info("No saved plans yet. Create one from the sidebar.")
@@ -417,7 +453,11 @@ else:
         if resources:
             st.markdown("**Recommended Resources:**")
             for r in resources:
-                st.markdown(f"- {r}")
+                title, url = normalize_resource(r)
+                if url:
+                    st.markdown(f"- [{title}]({url})")
+                else:
+                    st.markdown(f"- {title}")
 
         pdf_data_uri = None
         if REPORTLAB_AVAILABLE:
