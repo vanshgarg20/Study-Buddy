@@ -9,6 +9,7 @@ import json
 import ast
 from typing import Dict, Any, List, Optional
 from html import escape
+from urllib.parse import quote_plus
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -377,7 +378,7 @@ def normalize_resource(item):
     Accepts:
       - dicts like {'title':..,'url':..} or {'name':..,'link':..}
       - strings (plain URL or title)
-      - stringified dicts (\"{'name':'X','link':'http...'}\")
+      - stringified dicts ("{'name':'X','link':'http...'}")
     Returns (title, url_or_none)
     """
     # dict case
@@ -454,10 +455,15 @@ else:
             st.markdown("**Recommended Resources:**")
             for r in resources:
                 title, url = normalize_resource(r)
-                if url:
-                    st.markdown(f"- [{title}]({url})")
-                else:
-                    st.markdown(f"- {title}")
+                title = title or "Resource"
+                # if no url returned, create a Google search fallback
+                if not url:
+                    fallback_query = quote_plus(str(title))
+                    url = f"https://www.google.com/search?q={fallback_query}"
+                safe_title = escape(str(title))
+                safe_url = escape(str(url))
+                # render clickable anchor that opens in new tab
+                st.markdown(f'- <a href="{safe_url}" target="_blank" rel="noreferrer">{safe_title}</a>', unsafe_allow_html=True)
 
         pdf_data_uri = None
         if REPORTLAB_AVAILABLE:
