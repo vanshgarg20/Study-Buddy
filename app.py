@@ -112,12 +112,18 @@ def plan_to_text(record: Dict[str, Any]) -> str:
 
 # ---------- PDF helper ----------
 def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
+    """
+    Produces a clean, professional PDF (Helvetica) that:
+      - Forces Mon -> Sun for every week (fills missing days with a Rest/Catch-up note)
+      - Uses a robust safe_topics() formatter to avoid TypeError
+      - Prints resources as titles only
+    """
     if not REPORTLAB_AVAILABLE:
         raise RuntimeError("reportlab not installed")
 
     buffer = io.BytesIO()
 
-    # Professional margins
+    # Professional margins / A4
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
@@ -136,19 +142,17 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
         fontName="Helvetica-Bold",
         fontSize=18,
         leading=22,
-        spaceAfter=14
+        spaceAfter=12
     )
-
     heading_style = ParagraphStyle(
         "HeadingStyle",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
         fontSize=13,
         leading=16,
-        spaceBefore=10,
+        spaceBefore=8,
         spaceAfter=6
     )
-
     body_style = ParagraphStyle(
         "BodyStyle",
         parent=styles["Normal"],
@@ -157,7 +161,6 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
         leading=15,
         spaceAfter=4
     )
-
     bullet_style = ParagraphStyle(
         "BulletStyle",
         parent=styles["Normal"],
@@ -168,12 +171,20 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
         spaceAfter=2
     )
 
+    def safe_topics_pdf(t):
+        """Robust joining for topics used in PDF (lists, dicts, strings, None)."""
+        if isinstance(t, list):
+            return ", ".join(str(x) for x in t)
+        if isinstance(t, dict):
+            return ", ".join(f"{k}: {v}" for k, v in t.items())
+        if t is None:
+            return "—"
+        return str(t)
+
     story = []
 
-    # Title
+    # Title + meta
     story.append(Paragraph(escape(title), title_style))
-
-    # Meta
     created_ts = int(record.get("created_at", time.time()))
     meta_txt = (
         f"Saved: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(created_ts))}  |  "
@@ -181,7 +192,7 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
         f"Weeks: {record.get('weeks')}"
     )
     story.append(Paragraph(meta_txt, body_style))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 8))
 
     # Summary
     answers = record.get("answers", {})
@@ -192,38 +203,32 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
         f"Hours/day: {escape(str(answers.get('hours_per_day','—')))}",
         body_style
     ))
-
     if answers.get("goal"):
         story.append(Paragraph(f"<b>Goal:</b> {escape(str(answers.get('goal')))}", body_style))
-
     story.append(Spacer(1, 10))
 
-    # Weeks plan (force Mon-Sun)
+    # Study Plan (force Mon-Sun)
     story.append(Paragraph("<b>Study Plan</b>", heading_style))
-
     plan = record.get("plan", {})
     week_list = plan.get("weeks", [])
-
     desired_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
     for w_i, week in enumerate(week_list, start=1):
         story.append(Paragraph(f"Week {w_i}", heading_style))
 
-        # build mapping from day name -> topics for quick lookup
+        # map short-day -> topics
         day_map = {}
         for d in week.get("days", []):
             name = (d.get("day") or "").strip()
-            # normalize short names (e.g., "Monday" -> "Mon")
             nm = name[:3].title() if name else ""
             day_map[nm] = d.get("topics", [])
 
         for dd in desired_days:
             topics = day_map.get(dd)
             if topics:
-                topics_str = escape(safe_topics(topics))
+                topics_str = escape(safe_topics_pdf(topics))
                 story.append(Paragraph(f"• <b>{dd}:</b> {topics_str}", bullet_style))
             else:
-                # clear note for missing days
                 story.append(Paragraph(f"• <b>{dd}:</b> Rest / Catch-up / Self-study", bullet_style))
 
         story.append(Spacer(1, 8))
