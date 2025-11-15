@@ -213,48 +213,29 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     week_list = plan.get("weeks", [])
     desired_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-    for w_i, week in enumerate(week_list, start=1):
-        story.append(Paragraph(f"Week {w_i}", heading_style))
+    for w_i, week in enumerate(weeks_list, start=1):
+    st.markdown(f"<div class='sb-week'>Week {w_i}</div>", unsafe_allow_html=True)
 
-        # map short-day -> topics
-        day_map = {}
-        for d in week.get("days", []):
-            name = (d.get("day") or "").strip()
-            nm = name[:3].title() if name else ""
-            day_map[nm] = d.get("topics", [])
+    # force show Mon -> Sun in UI (fill missing days with Rest / Catch-up)
+    desired_days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
 
-        for dd in desired_days:
-            topics = day_map.get(dd)
-            if topics:
-                topics_str = escape(safe_topics_pdf(topics))
-                story.append(Paragraph(f"• <b>{dd}:</b> {topics_str}", bullet_style))
-            else:
-                story.append(Paragraph(f"• <b>{dd}:</b> Rest / Catch-up / Self-study", bullet_style))
+    # build map day-short -> topics
+    day_map_ui = {}
+    for d in week.get("days", []):
+        name = (d.get("day") or "").strip()
+        nm = name[:3].title() if name else ""
+        day_map_ui[nm] = d.get("topics", [])
 
-        story.append(Spacer(1, 8))
+    for dd in desired_days:
+        topics = day_map_ui.get(dd)
+        if topics:
+            topics_str = safe_topics(topics)
+            st.markdown(f"<div class='sb-day'>• <strong>{dd}:</strong> {escape(topics_str)}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='sb-day'>• <strong>{dd}:</strong> Rest / Catch-up / Self-study</div>", unsafe_allow_html=True)
 
-    # Daily template
-    daily_template = plan.get("daily_template")
-    if daily_template:
-        story.append(Paragraph("<b>Daily Template</b>", heading_style))
-        story.append(Paragraph(escape(daily_template), body_style))
-        story.append(Spacer(1, 8))
+    st.markdown("")  # small spacer between weeks
 
-    # Resources (titles only)
-    resources = plan.get("resources", [])
-    if resources:
-        story.append(Paragraph("<b>Recommended Resources</b>", heading_style))
-        for r in resources:
-            if isinstance(r, dict):
-                title = r.get("title") or r.get("name") or str(r)
-            else:
-                title = str(r)
-            story.append(Paragraph(f"• {escape(title)}", bullet_style))
-        story.append(Spacer(1, 10))
-
-    doc.build(story)
-    buffer.seek(0)
-    return buffer.read()
 
 # ---------- domain modules ----------
 DOMAIN_MODULES = {
