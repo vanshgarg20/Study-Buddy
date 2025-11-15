@@ -188,6 +188,16 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
 
     desired_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
+    def safe_topics(t):
+        if isinstance(t, list):
+            return ", ".join(str(x) for x in t)
+        if isinstance(t, dict):
+            # join k: v pairs
+            return ", ".join(f"{k}: {v}" for k, v in t.items())
+        if t is None:
+            return "—"
+        return str(t)
+
     for w_i, week in enumerate(week_list, start=1):
         story.append(Paragraph(f"Week {w_i}", heading_style))
 
@@ -202,7 +212,7 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
         for dd in desired_days:
             topics = day_map.get(dd)
             if topics:
-                topics_str = escape(", ".join(topics) if isinstance(topics, list) else str(topics))
+                topics_str = escape(safe_topics(topics))
                 story.append(Paragraph(f"• <b>{dd}:</b> {topics_str}", bullet_style))
             else:
                 # clear note for missing days
