@@ -1,17 +1,17 @@
-# app.py - Study Buddy (improved domain-aware generator for accurate topic plans)
-# Requirements: pip install streamlit reportlab (reportlab optional for PDF)
-
+# app.py - Final Study Buddy (remote API integration + local fallback)
+# Requirements: pip install streamlit requests reportlab
 import re
 import time
 import io
 import base64
-import json
 import hashlib
+import json
 from typing import Dict, Any, List, Optional
 from html import escape
 
 import streamlit as st
 import streamlit.components.v1 as components
+import requests
 
 # Optional PDF support
 try:
@@ -24,7 +24,7 @@ except Exception:
     REPORTLAB_AVAILABLE = False
 
 # -------------------------
-# session state container for saved plans
+# session state for plans
 if "demo_state" not in st.session_state:
     st.session_state["demo_state"] = {"plans": []}
 
@@ -36,12 +36,16 @@ def save_user_state(uid: str, state: Dict[str, Any]) -> None:
 
 # -------------------------
 # helpers
-STOPWORDS = {"and","the","of","in","for","to","with","a","an","on","by","&","&amp;"}
+STOPWORDS = {"and","the","of","in","for","to","with","a","an","on","by","&","&amp;","is","this"}
 
 def clean_tokens(topic: str) -> List[str]:
     parts = re.split(r'[^0-9A-Za-z]+', topic.lower())
     toks = [p for p in parts if p and p not in STOPWORDS]
     return toks or [topic.lower()]
+
+def deterministic_seed(s: str) -> int:
+    h = hashlib.md5(s.encode("utf-8")).hexdigest()
+    return int(h[:8], 16)
 
 def slugify(s: Optional[str]) -> str:
     if s is None:
@@ -84,7 +88,7 @@ def plan_to_text(record: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 # -------------------------
-# PDF generator (optional)
+# PDF helper (optional)
 def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     if not REPORTLAB_AVAILABLE:
         raise RuntimeError("reportlab not installed")
@@ -133,66 +137,71 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     return buffer.read()
 
 # -------------------------
-# Domain detection and domain-specific modules
-def deterministic_seed(s: str) -> int:
-    h = hashlib.md5(s.encode("utf-8")).hexdigest()
-    return int(h[:8], 16)
-
-# domain module templates for better relevance
+# Domain modules (career included)
 DOMAIN_MODULES = {
     "dsa": [
-        ["Arrays", "Strings", "Two Pointers"],
-        ["Linked Lists", "Stacks", "Queues"],
-        ["Trees", "Binary Search Tree", "Trie"],
-        ["Graphs", "BFS/DFS", "Shortest Paths"],
-        ["Sorting", "Searching", "Hashing"],
-        ["Dynamic Programming", "Greedy", "Backtracking"]
+        ["Arrays","Strings","Two Pointers"],
+        ["Linked Lists","Stacks","Queues"],
+        ["Trees","BST","Trie"],
+        ["Graphs","BFS/DFS","Shortest Paths"],
+        ["Sorting","Searching","Hashing"],
+        ["Dynamic Programming","Greedy","Backtracking"]
     ],
     "ml": [
-        ["Math & Linear Algebra", "Probability", "Statistics"],
-        ["Supervised Learning", "Regression", "Classification"],
-        ["Neural Networks", "CNNs", "RNNs"],
-        ["Optimization", "Loss Functions", "Regularization"],
-        ["Deployment", "Model Serving", "Monitoring"],
-        ["Advanced Topics", "Transformers", "Self-supervised"]
+        ["Math & Linear Algebra","Probability","Statistics"],
+        ["Supervised Learning","Regression","Classification"],
+        ["Neural Networks","CNNs","RNNs"],
+        ["Optimization","Loss Functions","Regularization"],
+        ["Deployment","Model Serving","Monitoring"],
+        ["Advanced Topics","Transformers","Self-supervised"]
     ],
     "web": [
-        ["HTML & CSS", "DOM", "Accessibility"],
-        ["JavaScript Basics", "ES6+", "DOM Manipulation"],
-        ["Frontend Framework", "React/Vue", "State Management"],
-        ["Backend Basics", "APIs", "Databases"],
-        ["Auth & Security", "Testing", "Deployment"],
-        ["Performance", "Caching", "Scaling"]
+        ["HTML & CSS","DOM","Accessibility"],
+        ["JavaScript Basics","ES6+","DOM Manipulation"],
+        ["Frontend Framework","React/Vue","State Management"],
+        ["Backend Basics","APIs","Databases"],
+        ["Auth & Security","Testing","Deployment"],
+        ["Performance","Caching","Scaling"]
     ],
     "db": [
-        ["RDBMS Basics", "SQL Queries", "Joins"],
-        ["Indexes", "Query Optimization", "Transactions"],
-        ["NoSQL Basics", "Document Stores", "Key-Value DB"],
-        ["Data Modeling", "Normalization", "Denormalization"],
-        ["Replication", "Sharding", "Backup/Restore"],
-        ["Analytics", "OLAP", "Data Warehousing"]
+        ["RDBMS Basics","SQL Queries","Joins"],
+        ["Indexes","Query Optimization","Transactions"],
+        ["NoSQL Basics","Document Stores","Key-Value DB"],
+        ["Data Modeling","Normalization","Denormalization"],
+        ["Replication","Sharding","Backup/Restore"],
+        ["Analytics","OLAP","Data Warehousing"]
     ],
     "cv": [
-        ["Image Processing", "Filters", "Transforms"],
-        ["Classical CV", "Features", "SIFT/ORB"],
-        ["Deep CV", "CNNs", "Object Detection"],
-        ["Segmentation", "Keypoints", "Pose Estimation"],
-        ["Data Augmentation", "Training Tricks", "Transfer Learning"],
-        ["Deployment", "Edge Models", "Optimization"]
+        ["Image Processing","Filters","Transforms"],
+        ["Classical CV","Features","SIFT/ORB"],
+        ["Deep CV","CNNs","Object Detection"],
+        ["Segmentation","Keypoints","Pose Estimation"],
+        ["Data Augmentation","Training Tricks","Transfer Learning"],
+        ["Deployment","Edge Models","Optimization"]
+    ],
+    "career": [
+        ["Resume & Profile","Formatting","Keywords"],
+        ["Behavioral Questions","STAR Method","Story Crafting"],
+        ["Mock Interviews","Problem Solving","Pair Practice"],
+        ["Company Research","Role Mapping","Expectations"],
+        ["System Design / Case Study","High-level Thinking","Trade-offs"],
+        ["Negotiation & HR","Offer Review","Salary Discussion"]
     ],
     "default": [
-        ["Introduction", "Core Concepts", "Motivation"],
-        ["Tools & Setup", "Libraries", "Environment"],
-        ["Core Algorithms", "Patterns", "Practice"],
-        ["Mini-project", "Integration", "Testing"],
-        ["Optimization", "Scaling", "Evaluation"],
-        ["Advanced Concepts", "Papers", "Further Reading"]
+        ["Introduction","Core Concepts","Motivation"],
+        ["Tools & Setup","Libraries","Environment"],
+        ["Core Algorithms","Patterns","Practice"],
+        ["Mini-project","Integration","Testing"],
+        ["Optimization","Scaling","Evaluation"],
+        ["Advanced Concepts","Papers","Further Reading"]
     ]
 }
 
 def detect_domain(tokens: List[str]) -> str:
     tset = set(tokens)
-    # simple heuristics
+    # career/soft-skills heuristics
+    if any(x in tset for x in ("interview","interviews","resume","cv","cvresume","behavioural","behavioral","behavior","soft","skill","skills","communication","story","portfolio","networking","negotiation","salary","hr","offer","mock")):
+        return "career"
     if any(x in tset for x in ("dsa","ds","data","structure","structures","algorithm","algorithms","algo")):
         return "dsa"
     if any(x in tset for x in ("ml","machine","learning","neural","deep","model","models")):
@@ -205,7 +214,7 @@ def detect_domain(tokens: List[str]) -> str:
         return "cv"
     return "default"
 
-# build topic-aware day list using domain modules
+# build topic-aware day list using modules
 def build_topic_daylist(topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
     weeks = max(1, int(weeks))
     tokens = clean_tokens(topic)
@@ -217,84 +226,63 @@ def build_topic_daylist(topic: str, weeks: int, answers: Dict[str, Any]) -> Dict
     for w in range(weeks):
         day_entries = []
         for i, day in enumerate(base_days):
-            # choose module row and two items deterministically
             row_idx = (seed + w*3 + i) % len(modules)
             row = modules[row_idx]
             primary = row[i % len(row)]
             secondary = row[(i+1) % len(row)]
-            # add practice / mini task tailored to domain tokens
-            task_token = tokens[(seed + i + w) % len(tokens)]
-            if domain == "dsa":
-                practice = f"LeetCode practice: {task_token}"
-                topics = [primary, secondary, practice]
+            token = tokens[(seed + i + w) % len(tokens)]
+            if domain == "career":
+                if i % 3 == 0:
+                    topics = [primary, f"Practice: {token} (mock)"]
+                elif i % 3 == 1:
+                    topics = [secondary, "STAR story refinement", f"Action: draft 1 resume bullet about {token}"]
+                else:
+                    topics = ["Mock interview (30-45 min)", "Feedback & notes", f"Company research: {token}"]
+            elif domain == "dsa":
+                topics = [primary, secondary, f"LeetCode practice: {token}"]
             elif domain == "ml":
-                practice = f"Small experiment: implement {task_token}"
-                topics = [primary, secondary, practice]
+                topics = [primary, secondary, f"Mini experiment: {token}"]
             elif domain == "web":
-                practice = f"Build: mini {task_token} feature"
-                topics = [primary, secondary, practice]
+                topics = [primary, secondary, f"Build: {token} feature"]
             elif domain == "db":
-                practice = f"Design exercise: model {task_token}"
-                topics = [primary, secondary, practice]
+                topics = [primary, secondary, f"Design exercise: model {token}"]
             elif domain == "cv":
-                practice = f"Notebook: try detection on {task_token}"
-                topics = [primary, secondary, practice]
+                topics = [primary, secondary, f"Notebook: try task on {token}"]
             else:
-                practice = f"Practice: {task_token}"
-                topics = [primary, secondary, practice]
+                topics = [primary, secondary, f"Practice: {token}"]
             day_entries.append({"day": day, "topics": topics})
         weeks_list.append({"days": day_entries})
-    # daily template tuned by domain & skill
+    # domain-tuned daily templates & resources
     hours = answers.get("hours_per_day", 2)
-    if domain == "dsa":
-        daily_template = f"{hours} hours/day: 60% practice (problems) + 30% concept review + 10% mock tests"
+    skill = answers.get("skill_level", "beginner")
+    if domain == "career":
+        daily_template = f"{hours} hours/day: 40% practice (mock + problems) • 30% story & resume work • 30% research & interviews"
+        resources = [
+            "Resume templates & review guides",
+            "Common behavioral questions + STAR examples",
+            "Platforms for mock interviews (Pramp, InterviewBuddy, peers)",
+            "System design primers & curated interview lists"
+        ]
+    elif domain == "dsa":
+        daily_template = f"{hours} hours/day: 60% problem practice + 30% concept review + 10% mock tests"
+        resources = [
+            "Top LeetCode lists",
+            "CLRS / EPI chapters (selected)",
+            "Interactive practice: Codeforces/HackerRank"
+        ]
     elif domain == "ml":
-        daily_template = f"{hours} hours/day: 35% theory + 45% experiments + 20% reading papers"
+        daily_template = f"{hours} hours/day: theory + experiments + reading (adjust by skill={skill})"
+        resources = [
+            "Practical ML course (Coursera/fast.ai)",
+            "Hands-on books & Kaggle notebooks",
+            "Model deployment tutorials"
+        ]
     else:
         daily_template = f"{hours} hours/day: mix of theory + practice + mini project"
-    # resources tailored
-    top_token = tokens[0] if tokens else topic
-    if domain == "dsa":
-        resources = [
-            f"Top LeetCode lists for {top_token}",
-            "Book: Elements of Programming Interviews / CLRS (select chapters)",
-            "Interactive platforms: HackerRank, Codeforces practice sets",
-            "YouTube: algorithm concept playlists"
-        ]
-    elif domain == "ml":
-        resources = [
-            f"Course on {top_token} (Coursera/fast.ai)",
-            "Book: Hands-On Machine Learning",
-            "Kaggle datasets & tutorials",
-            "Papers & recipes for model tuning"
-        ]
-    elif domain == "web":
-        resources = [
-            f"Official docs & tutorials on {top_token}",
-            "Frontend projects: build clones and components",
-            "Backend API & DB tutorials",
-            "Deployment guides (Vercel/Netlify/Docker)"
-        ]
-    elif domain == "db":
-        resources = [
-            f"SQL tutorials for {top_token}",
-            "DB design examples & normalization guides",
-            "Indexing & performance tuning articles",
-            "Practice: design schemas for sample apps"
-        ]
-    elif domain == "cv":
-        resources = [
-            f"CV course: practical CNN projects for {top_token}",
-            "OpenCV & PyTorch notebooks",
-            "Datasets for experiments (COCO, VOC)",
-            "Papers & model zoo examples"
-        ]
-    else:
         resources = [
             f"Intro course about {topic}",
-            f"Top tutorials for {top_token}",
-            f"Book / notes on {top_token}",
-            "YouTube playlists & sample projects"
+            "YouTube playlists & sample projects",
+            "Documentation & official guides"
         ]
     plan = {"weeks": weeks_list, "daily_template": daily_template, "resources": resources}
     return plan
@@ -313,7 +301,49 @@ def local_create_plan(uid: str, topic: str, weeks: int, answers: Dict[str, Any])
     return rec
 
 # -------------------------
-# UI: config + styles
+# Remote API wrapper (uses st.secrets["API_KEY"] and st.secrets["API_URL"])
+def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
+    api_key = st.secrets.get("API_KEY")
+    api_url = st.secrets.get("API_URL")
+    if not api_key or not api_url:
+        # no secret — use local generator
+        return local_create_plan(uid, topic, weeks, answers)
+
+    # attempt remote call
+    payload = {"topic": topic, "weeks": int(weeks), "answers": answers, "uid": uid}
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    try:
+        resp = requests.post(api_url, json=payload, headers=headers, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+        # Expect: data["plan"] is structured dict. If not present, fallback.
+        plan_obj = data.get("plan")
+        if not plan_obj or not isinstance(plan_obj, dict):
+            # if API returned structured top-level fields, try to normalize:
+            # Some APIs may return {"result": {"plan": {...}}}
+            if "result" in data and isinstance(data["result"], dict) and "plan" in data["result"]:
+                plan_obj = data["result"]["plan"]
+        if plan_obj and isinstance(plan_obj, dict):
+            rec = {
+                "topic": data.get("topic", topic),
+                "weeks": int(max(1, weeks)),
+                "answers": answers,
+                "plan": plan_obj,
+                "quiz": data.get("quiz", []),
+                "created_at": int(time.time()),
+                "source": "remote"
+            }
+            return rec
+        # otherwise fallback
+        st.warning("Remote API returned no structured plan — using local fallback.")
+    except requests.HTTPError as e:
+        st.error(f"Remote API HTTP error: {e}")
+    except Exception as e:
+        st.error(f"Remote API request failed: {e}")
+    return local_create_plan(uid, topic, weeks, answers)
+
+# -------------------------
+# UI + styles
 st.set_page_config(page_title="Study Buddy", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
@@ -339,7 +369,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------
-# Sidebar form (use keys only so no session-state default warnings)
+# Sidebar form (session-state safe)
 with st.sidebar:
     st.header("Create Plan")
     if "topic_input" not in st.session_state:
@@ -364,8 +394,14 @@ with st.sidebar:
         username = st.text_input("Username (optional)", key="username_input", help="Optional: use same name to keep plans consistent across sessions later.")
         submit = st.form_submit_button("Generate")
 
+# Show small status: remote available?
+if "API_KEY" in st.secrets and "API_URL" in st.secrets:
+    st.info("Remote generation: ENABLED (using API_KEY + API_URL from secrets).")
+else:
+    st.info("Remote generation: NOT enabled — app will use local generator (no secrets found).")
+
 # -------------------------
-# Generate: REPLACE existing plan for this user (so only one saved plan per user)
+# Generate (use remote if possible, else local)
 status_saved = False
 uid = (st.session_state.get("username_input","").strip() or "session_user")
 if submit:
@@ -373,23 +409,25 @@ if submit:
         st.error("Please enter a topic.")
     else:
         answers = {"skill_level": st.session_state.get("skill_input"), "hours_per_day": st.session_state.get("hours_input"), "goal": st.session_state.get("goal_input")}
-        rec = local_create_plan(uid, st.session_state["topic_input"].strip(), int(st.session_state["weeks_input"]), answers)
+        # Try remote first (if secrets present) otherwise fallback to local
+        rec = generate_plan_via_api(uid, st.session_state["topic_input"].strip(), int(st.session_state["weeks_input"]), answers)
         state = get_user_state(uid)
         plans = state.get("plans", [])
+        # Replace existing plan at index 0 (so only one saved plan per user)
         if plans:
             plans[0] = rec
         else:
             plans.insert(0, rec)
         state["plans"] = plans
         save_user_state(uid, state)
-        st.success("Plan created and saved ✅ (replaced previous plan)")
+        st.success(f"Plan created and saved ✅ (source: {rec.get('source')})")
         status_saved = True
 
 # -------------------------
-# Header
+# Header + render plans (copy & download only)
 st.markdown("<div class='sb-page'><div class='sb-container'>", unsafe_allow_html=True)
 st.markdown("<div class='sb-title'>Study Buddy</div>", unsafe_allow_html=True)
-st.markdown("<div class='sb-sub'>Topic-aware study plans — generate different plan for every topic.</div>", unsafe_allow_html=True)
+st.markdown("<div class='sb-sub'>Topic-aware study plans — remote API used when available.</div>", unsafe_allow_html=True)
 if status_saved:
     st.success("Saved to memory.")
 st.markdown("---")
@@ -399,8 +437,6 @@ if st.session_state.get("username_input","").strip():
 else:
     st.markdown(f"<div class='sb-meta sb-muted'>No username provided — plans saved to this browser session only.</div>", unsafe_allow_html=True)
 
-# -------------------------
-# Render plans (only copy + download actions)
 state = get_user_state(uid)
 plans = state.get("plans", [])
 
@@ -519,10 +555,9 @@ else:
             components.html(actions_html, height=80, scrolling=False)
         with col_right:
             st.write("")  # alignment
-
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("---", unsafe_allow_html=True)
 
 # footer
-st.markdown("<div class='sb-muted'>Tip: keep a username if you want consistent saved plans across sessions with future persistent storage.</div>", unsafe_allow_html=True)
+st.markdown("<div class='sb-muted'>Tip: add a username to persist plans across sessions (future feature).</div>", unsafe_allow_html=True)
 st.markdown("</div></div>", unsafe_allow_html=True)
