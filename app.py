@@ -1,17 +1,19 @@
-# app.py - Final Study Buddy (generate replaces previous plan; copy + download only)
-# Requirements: pip install streamlit reportlab
+# app.py - Final Study Buddy (topic-sensitive generator, replace on generate, copy+download only)
+# Requirements: pip install streamlit reportlab (reportlab optional for PDF)
 
 import re
 import time
 import io
 import base64
+import json
+import hashlib
 from typing import Dict, Any, List, Optional
 from html import escape
 
 import streamlit as st
 import streamlit.components.v1 as components
 
-# ReportLab (optional)
+# Optional PDF support
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -21,8 +23,8 @@ try:
 except Exception:
     REPORTLAB_AVAILABLE = False
 
-# --------------------
-# app state
+# -------------------------
+# session state container for saved plans
 if "demo_state" not in st.session_state:
     st.session_state["demo_state"] = {"plans": []}
 
@@ -32,39 +34,7 @@ def get_user_state(uid: str) -> Dict[str, Any]:
 def save_user_state(uid: str, state: Dict[str, Any]) -> None:
     st.session_state["demo_state"] = state
 
-# --------------------
-# page config + styles
-st.set_page_config(page_title="Study Buddy", layout="wide", initial_sidebar_state="expanded")
-st.markdown(
-    """
-    <style>
-    .sb-page { display:flex; justify-content:center; padding:20px 0 40px; }
-    .sb-container { width:100%; max-width:980px; padding:0 20px; }
-    .sb-title { font-size:48px; font-weight:900; margin:4px 0 6px 0;
-      background: linear-gradient(90deg,#00d4ff,#5b7cff,#c86dd7,#ff7abd);
-      background-size: 400% 400%; -webkit-background-clip: text; color: transparent;
-      animation: floatGradient 12s ease-in-out infinite; text-shadow: 0 6px 18px rgba(0,0,0,0.45);
-    }
-    @keyframes floatGradient { 0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%} }
-    .sb-sub { color:#9aa3b2; margin-bottom:18px; font-size:14px; }
-    .sb-card { background: rgba(255,255,255,0.02); border-radius:12px; padding:18px 20px; margin-bottom:18px; box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
-    .sb-topic { font-size:20px; font-weight:700; margin-bottom:6px; color:#fff; }
-    .sb-meta { color:#9aa3b2; margin-bottom:10px; font-size:13px; }
-    .sb-week { font-size:15px; font-weight:700; margin-top:12px; margin-bottom:6px; }
-    .sb-day { margin-left:14px; margin-bottom:4px; color:#e6eef8; }
-    .actions-wrapper { display:flex; align-items:center; gap:10px; margin-top:6px; }
-    .actions-pill { background: rgba(255,255,255,0.03); color: #f4f7fb; border-radius: 999px; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.04); cursor: pointer; font-weight:700; display:inline-flex; align-items:center; gap:8px; }
-    .actions-dropdown { position: absolute; top: 44px; left: 0; background: rgba(20,24,28,0.98); border-radius:10px; padding:8px; min-width:200px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.03); z-index: 9999; display:none; flex-direction:column; gap:6px; }
-    .actions-dropdown.show { display:flex; }
-    .actions-item { background: transparent; color: #e6eef8; border-radius:8px; padding:8px 12px; cursor: pointer; font-weight:600; display:flex; gap:8px; align-items:center; }
-    .actions-item:hover { background: rgba(255,255,255,0.02); transform: translateY(-1px); }
-    .stButton>button, .stButton>div>button { border-radius:10px !important; padding:8px 12px !important; font-weight:700 !important; }
-    @media (max-width:720px) { .sb-title { font-size:36px; } .actions-dropdown { left: auto; right: 0; } }
-    </style>
-    """, unsafe_allow_html=True
-)
-
-# --------------------
+# -------------------------
 # helpers
 def slugify(s: Optional[str]) -> str:
     if s is None:
@@ -106,7 +76,8 @@ def plan_to_text(record: Dict[str, Any]) -> str:
             lines.append(f"  - {r}")
     return "\n".join(lines)
 
-# PDF generator
+# -------------------------
+# PDF generator (optional)
 def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     if not REPORTLAB_AVAILABLE:
         raise RuntimeError("reportlab not installed")
@@ -154,50 +125,121 @@ def generate_pdf_bytes_platypus(title: str, record: Dict[str, Any]) -> bytes:
     buffer.seek(0)
     return buffer.read()
 
-# local plan generator
-def local_create_plan(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
+# -------------------------
+# Improved topic-dependent local plan generator
+def deterministic_seed(s: str) -> int:
+    h = hashlib.md5(s.encode("utf-8")).hexdigest()
+    # small integer seed derived from hash
+    return int(h[:8], 16)
+
+def topic_keywords(topic: str) -> List[str]:
+    # break topic into meaningful pieces and add variations
+    parts = re.split(r'[^0-9A-Za-z]+', topic.strip())
+    parts = [p.lower() for p in parts if p]
+    # common fallback keywords if topic is short
+    defaults = ["basics", "theory", "practice", "project", "tools", "reading"]
+    kws = parts + defaults
+    # deduplicate preserving order
+    seen = set()
+    out = []
+    for k in kws:
+        if k not in seen:
+            out.append(k)
+            seen.add(k)
+    return out
+
+def build_topic_daylist(topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
     weeks = max(1, int(weeks))
-    created = int(time.time())
-    topic_clean = (topic or "Topic").strip().title()
-    base_days = [
-        {"day": "Mon", "topics": [f"Introduction to {topic_clean}", "Types of learning"]},
-        {"day": "Tue", "topics": ["Supervised Learning", "Unsupervised Learning"]},
-        {"day": "Wed", "topics": ["Regression", "Classification"]},
-        {"day": "Thu", "topics": ["Clustering", "Dimensionality Reduction"]},
-        {"day": "Fri", "topics": ["Neural Networks", "Deep Learning basics"]},
-        {"day": "Sat", "topics": ["Frameworks & Tools"]},
-        {"day": "Sun", "topics": ["Practice", "Mini Project"]},
+    seed = deterministic_seed(topic + str(answers.get("skill_level","")))
+    kws = topic_keywords(topic)
+    # different "modules" to vary content
+    module_buckets = [
+        ["Intro", "History", "Concepts"],
+        ["Data", "Libraries", "Tools"],
+        ["Algorithms", "Models", "Practice"],
+        ["Projects", "Deployment", "Testing"],
+        ["Optimization", "Evaluation", "Scaling"],
+        ["Advanced Topics", "Papers", "Research"],
     ]
-    weeks_list: List[Dict[str, Any]] = []
+    # rotate buckets deterministically
+    rotated = module_buckets[seed % len(module_buckets):] + module_buckets[:seed % len(module_buckets)]
+    base_days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+    weeks_list = []
     for w in range(weeks):
-        shift = w % len(base_days)
-        week_days = []
-        for d in base_days:
-            topics = list(d["topics"])
-            if shift:
-                topics = topics[shift:] + topics[:shift]
-            week_days.append({"day": d["day"], "topics": topics})
-        weeks_list.append({"days": week_days})
-    plan = {
-        "weeks": weeks_list,
-        "daily_template": f"{answers.get('hours_per_day',2)} hours/day: 1 hour theory + 1 hour practice",
-        "resources": ["Intro course (Coursera)", "Book: Python Machine Learning", "YouTube playlists"]
-    }
+        day_entries = []
+        # produce day topics using kws and rotated modules + shifting
+        for i, day in enumerate(base_days):
+            # pick 2-3 topics for this day deterministically
+            idx1 = (seed + w*7 + i*3) % max(1, len(kws))
+            idx2 = (seed + w*11 + i*5) % max(1, len(rotated))
+            idx3 = (seed + w*13 + i*7) % len(kws)
+            topic1 = kws[idx1].capitalize()
+            module = rotated[idx2 % len(rotated)]
+            module_item = module[i % len(module)]
+            topic2 = module_item
+            # vary third item sometimes
+            if (seed + w + i) % 2 == 0:
+                topic3 = f"Practice: {kws[idx3]}"
+                topics = [f"{topic1} — {topic2}", topic3]
+            else:
+                topics = [topic1, topic2, f"Mini task: {kws[idx3]}"]
+            day_entries.append({"day": day, "topics": topics})
+        weeks_list.append({"days": day_entries})
+    daily_template = f"{answers.get('hours_per_day',2)} hours/day: mix of theory + practice + mini project"
+    # resource suggestions made topic-aware
+    resources = [
+        f"Intro course about {topic}",
+        f"Top tutorials for {kws[0]}",
+        f"Book / notes on {kws[0].title()}",
+        "YouTube playlists & sample projects"
+    ]
+    plan = {"weeks": weeks_list, "daily_template": daily_template, "resources": resources}
+    return plan
+
+def local_create_plan(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
+    created = int(time.time())
     rec = {
-        "topic": topic,
-        "weeks": weeks,
+        "topic": topic.strip() or "Topic",
+        "weeks": int(max(1, weeks)),
         "answers": answers,
-        "plan": plan,
+        "plan": build_topic_daylist(topic.strip() or "Topic", int(weeks), answers),
         "quiz": [],
         "created_at": created,
         "source": "local"
     }
     return rec
 
-# --------------------
-# Sidebar form - session_state-safe (initialize defaults once, then use key= only)
+# -------------------------
+# UI: config + styles
+st.set_page_config(page_title="Study Buddy", layout="wide", initial_sidebar_state="expanded")
+st.markdown("""
+<style>
+.sb-page{display:flex;justify-content:center;padding:20px 0 40px}
+.sb-container{width:100%;max-width:980px;padding:0 20px}
+.sb-title{font-size:48px;font-weight:900;margin:4px 0 6px 0;background:linear-gradient(90deg,#00d4ff,#5b7cff,#c86dd7,#ff7abd);background-size:400% 400%;-webkit-background-clip:text;color:transparent;animation:floatGradient 12s ease-in-out infinite;text-shadow:0 6px 18px rgba(0,0,0,0.45)}
+@keyframes floatGradient{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+.sb-sub{color:#9aa3b2;margin-bottom:18px;font-size:14px}
+.sb-card{background:rgba(255,255,255,0.02);border-radius:12px;padding:18px 20px;margin-bottom:18px;box-shadow:0 6px 18px rgba(0,0,0,0.45)}
+.sb-topic{font-size:20px;font-weight:700;margin-bottom:6px;color:#fff}
+.sb-meta{color:#9aa3b2;margin-bottom:10px;font-size:13px}
+.sb-week{font-size:15px;font-weight:700;margin-top:12px;margin-bottom:6px}
+.sb-day{margin-left:14px;margin-bottom:4px;color:#e6eef8}
+.actions-wrapper{display:flex;align-items:center;gap:10px;margin-top:6px}
+.actions-pill{background:rgba(255,255,255,0.03);color:#f4f7fb;border-radius:999px;padding:8px 12px;border:1px solid rgba(255,255,255,0.04);cursor:pointer;font-weight:700;display:inline-flex;align-items:center;gap:8px}
+.actions-dropdown{position:absolute;top:44px;left:0;background:rgba(20,24,28,0.98);border-radius:10px;padding:8px;min-width:200px;box-shadow:0 10px 30px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.03);z-index:9999;display:none;flex-direction:column;gap:6px}
+.actions-dropdown.show{display:flex}
+.actions-item{background:transparent;color:#e6eef8;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:600;display:flex;gap:8px;align-items:center}
+.actions-item:hover{background:rgba(255,255,255,0.02);transform:translateY(-1px)}
+.stButton>button,.stButton>div>button{border-radius:10px !important;padding:8px 12px !important;font-weight:700 !important}
+@media (max-width:720px){.sb-title{font-size:36px}.actions-dropdown{left:auto;right:0}}
+</style>
+""", unsafe_allow_html=True)
+
+# -------------------------
+# Sidebar form (use keys only so no session-state default warnings)
 with st.sidebar:
     st.header("Create Plan")
+    # initialize defaults only if missing
     if "topic_input" not in st.session_state:
         st.session_state["topic_input"] = "machine learning"
     if "weeks_input" not in st.session_state:
@@ -220,7 +262,8 @@ with st.sidebar:
         username = st.text_input("Username (optional)", key="username_input", help="Optional: use same name to keep plans consistent across sessions later.")
         submit = st.form_submit_button("Generate")
 
-# generate handling — REPLACE existing plan (if any) for this uid
+# -------------------------
+# Generate: REPLACE existing plan for this user (so only one saved plan per user)
 status_saved = False
 uid = (st.session_state.get("username_input","").strip() or "session_user")
 if submit:
@@ -228,10 +271,11 @@ if submit:
         st.error("Please enter a topic.")
     else:
         answers = {"skill_level": st.session_state.get("skill_input"), "hours_per_day": st.session_state.get("hours_input"), "goal": st.session_state.get("goal_input")}
+        # Use the improved local generator (topic-sensitive)
         rec = local_create_plan(uid, st.session_state["topic_input"].strip(), int(st.session_state["weeks_input"]), answers)
         state = get_user_state(uid)
         plans = state.get("plans", [])
-        # REPLACE logic: if there is an existing plan for this uid, replace the first one; otherwise insert
+        # Replace the existing plan (index 0) or insert if empty
         if plans:
             plans[0] = rec
         else:
@@ -241,10 +285,11 @@ if submit:
         st.success("Plan created and saved ✅ (replaced previous plan)")
         status_saved = True
 
-# header
+# -------------------------
+# Header
 st.markdown("<div class='sb-page'><div class='sb-container'>", unsafe_allow_html=True)
 st.markdown("<div class='sb-title'>Study Buddy</div>", unsafe_allow_html=True)
-st.markdown("<div class='sb-sub'>Simple, clean study plans — created instantly.</div>", unsafe_allow_html=True)
+st.markdown("<div class='sb-sub'>Topic-aware study plans — generate different plan for every topic.</div>", unsafe_allow_html=True)
 if status_saved:
     st.success("Saved to memory.")
 st.markdown("---")
@@ -254,7 +299,8 @@ if st.session_state.get("username_input","").strip():
 else:
     st.markdown(f"<div class='sb-meta sb-muted'>No username provided — plans saved to this browser session only.</div>", unsafe_allow_html=True)
 
-# render plans (only copy + download actions)
+# -------------------------
+# Render plans (only copy + download actions)
 state = get_user_state(uid)
 plans = state.get("plans", [])
 
@@ -293,7 +339,7 @@ else:
                 st.markdown(f"<div class='sb-day'>• <strong>{day_name}:</strong> {topics_str}</div>", unsafe_allow_html=True)
             st.markdown("")
 
-        # resources & template
+        # daily template & resources
         if plan_data.get("daily_template"):
             st.markdown("**Daily Template:**")
             st.markdown(f"- {plan_data.get('daily_template')}")
@@ -303,7 +349,7 @@ else:
             for r in resources:
                 st.markdown(f"- {r}")
 
-        # Prepare PDF data URI
+        # Prepare PDF data URI (if available)
         pdf_data_uri = None
         if REPORTLAB_AVAILABLE:
             try:
@@ -316,7 +362,7 @@ else:
         plan_text = plan_to_text(p)
         plan_js_safe = escape(plan_text).replace("\\", "\\\\").replace("`", "\\`").replace("\n","\\n").replace("\r","")
 
-        # actions: only download + copy (no delete)
+        # Actions: copy + download (no delete)
         col_left, col_right = st.columns([0.92, 0.08])
         with col_left:
             actions_html = f"""
@@ -338,6 +384,7 @@ else:
               document.addEventListener("click", () => {{ menu.classList.remove("show"); }});
               menu.addEventListener("click", (e) => {{ e.stopPropagation(); }});
 
+              // Download
               const dl = document.getElementById("menu_download_{key_base}");
               dl.addEventListener("click", () => {{
                 const uri = { ('"' + pdf_data_uri + '"') if pdf_data_uri else 'null' };
@@ -354,6 +401,7 @@ else:
                 menu.classList.remove('show');
               }});
 
+              // Copy
               const copyBtn = document.getElementById("menu_copy_{key_base}");
               copyBtn.addEventListener("click", async () => {{
                 try {{
@@ -370,7 +418,7 @@ else:
             """
             components.html(actions_html, height=80, scrolling=False)
         with col_right:
-            st.write("")  # keep layout alignment
+            st.write("")  # alignment
 
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("---", unsafe_allow_html=True)
