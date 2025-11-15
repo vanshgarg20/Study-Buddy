@@ -1,4 +1,4 @@
-# app.py - Final Study Buddy (Groq retry-on-model-not-found + local fallback)
+# app.py - Final Study Buddy (clean UI; no debug banners)
 # Requirements: pip install streamlit requests reportlab
 import re
 import time
@@ -219,32 +219,30 @@ def local_create_plan(uid: str, topic: str, weeks: int, answers: Dict[str, Any])
     rec = {"topic": topic.strip() or "Topic","weeks": int(max(1, weeks)),"answers": answers,"plan": build_topic_daylist(topic.strip() or "Topic", int(weeks), answers),"quiz": [],"created_at": created,"source": "local"}
     return rec
 
-# ---------- improved remote wrapper with retries ----------
+# ---------- improved remote wrapper with retries (NO UI banners) ----------
 def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, Any]) -> Dict[str, Any]:
     """Try remote Groq model(s). If model_not_found occurs, retry with fallback names.
-       Returns remote plan dict or falls back to local_create_plan.
+       Quiet on the UI (no st.info/warning/error). Returns remote plan dict or falls back to local_create_plan.
     """
     api_key = st.secrets.get("API_KEY")
     api_url = st.secrets.get("API_URL")
     if not api_key or not api_url:
-        st.info("No API secrets found — using local generator.")
+        # no remote credentials - use local generator quietly
         return local_create_plan(uid, topic, weeks, answers)
 
-    # models to attempt: order: secret override -> common fallbacks
     preferred = st.secrets.get("GROQ_MODEL")
     candidates = []
     if preferred:
         candidates.append(preferred)
-    # sensible fallback list (edit this list if you know your account models)
     candidates += [
         "llama-3.1-70b-versatile",
         "mixtral-8x7b",
         "llama-3.1-instruct",
         "mixtral-instruct",
-        "llama-2-13b-chat"
+        "llama-2-13b-chat",
     ]
-    # remove duplicates while preserving order
-    seen=set(); models=[m for m in candidates if not (m in seen or seen.add(m))]
+    seen = set()
+    models = [m for m in candidates if not (m in seen or seen.add(m))]
 
     system_msg = {"role":"system","content":"You are a helpful assistant that produces structured study plans. Reply with valid JSON only using the schema: {\"topic\":string, \"plan\": {\"weeks\": [{\"days\":[{\"day\":\"Mon\",\"topics\":[...]}, ... ]}, ...], \"daily_template\":string, \"resources\":[...]}}. No extra text."}
     user_instructions = {"role":"user","content": f"Generate a study plan for topic: \"{topic}\". Weeks: {weeks}. Skill: {answers.get('skill_level')}. Hours per day: {answers.get('hours_per_day')}. Goal: {answers.get('goal')}. Output MUST be JSON matching the schema."}
@@ -256,47 +254,37 @@ def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, A
     for model_name in models:
         payload = payload_base.copy()
         payload["model"] = model_name
-        st.info(f"Trying remote model: {model_name}")
         try:
             resp = requests.post(api_url, json=payload, headers=headers, timeout=20)
-            # If response code not 2xx, parse body for model_not_found and decide
             if resp.status_code >= 400:
-                # try to parse JSON error
                 try:
                     err = resp.json()
                     last_error_text = json.dumps(err, indent=2)
-                    # check model_not_found pattern
                     if isinstance(err, dict):
                         msg = err.get("error", err).get("message") if isinstance(err.get("error",{}), dict) else str(err)
                         if msg and "model" in msg and ("does not exist" in msg or "not found" in msg or "not have access" in msg):
-                            st.warning(f"Model {model_name} not found or no access; trying next candidate.")
-                            continue  # try next model
+                            # model not found/no access -> try next model (quiet)
+                            continue
                 except Exception:
                     last_error_text = resp.text
-                    # crude grep
                     if "model" in resp.text and ("does not exist" in resp.text or "not found" in resp.text or "not have access" in resp.text):
-                        st.warning(f"Model {model_name} not found (raw). Trying next candidate.")
                         continue
-                # if error but not model-not-found, show and break (no point retrying)
-                st.error(f"Remote API HTTP error {resp.status_code}: {resp.text}")
+                # other HTTP error - do not show on UI; break out to fallback
+                last_error_text = resp.text
                 break
 
-            # success 2xx -> try parse
             data = resp.json()
-            # OpenAI-like response contains choices
             plan_obj = None; topic_out = topic
             if isinstance(data, dict) and "choices" in data:
                 choices = data.get("choices", [])
                 assistant_text = ""
                 if choices and isinstance(choices[0], dict):
                     assistant_text = choices[0].get("message", {}).get("content", "") or choices[0].get("text", "")
-                # try load assistant_text as JSON
                 try:
                     parsed = json.loads(assistant_text)
                     plan_obj = parsed.get("plan") if isinstance(parsed, dict) else None
                     topic_out = parsed.get("topic", topic) if isinstance(parsed, dict) else topic
                 except Exception:
-                    # extract JSON substring
                     m = re.search(r'\{.*\}', assistant_text, flags=re.S)
                     if m:
                         try:
@@ -306,38 +294,22 @@ def generate_plan_via_api(uid: str, topic: str, weeks: int, answers: Dict[str, A
                         except Exception:
                             plan_obj = None
             else:
-                # direct structured JSON response
                 plan_obj = data.get("plan") if isinstance(data, dict) else None
                 topic_out = data.get("topic", topic) if isinstance(data, dict) else topic
 
             if plan_obj and isinstance(plan_obj, dict):
                 rec = {"topic": topic_out, "weeks": int(max(1, weeks)), "answers": answers, "plan": plan_obj, "quiz": data.get("quiz", [] ) if isinstance(data, dict) else [], "created_at": int(time.time()), "source": f"remote ({model_name})"}
-                st.success(f"Remote plan generated by {model_name} ✓")
                 return rec
 
-            # If we got here, remote returned 200 but couldn't parse a plan
-            st.warning(f"Model {model_name} returned a response but no structured plan could be parsed. Showing response for debugging.")
-            try:
-                st.code(json.dumps(data, indent=2), language="json")
-            except Exception:
-                st.text(resp.text)
-            # try next model if model couldn't produce structured JSON
+            # couldn't parse -> try next model silently
             continue
 
-        except requests.HTTPError as e:
-            last_error_text = str(e)
-            st.error(f"Remote API HTTP error for {model_name}: {e}")
-            continue
         except Exception as e:
             last_error_text = str(e)
-            st.error(f"Remote request failed for {model_name}: {e}")
+            # try next model quietly
             continue
 
-    # exhausted candidates
-    st.error("All remote model attempts failed or produced unusable output.")
-    if last_error_text:
-        st.code(last_error_text, language="json")
-    st.info("Falling back to local generator.")
+    # exhausted or remote failed -> fallback quietly to local generator
     return local_create_plan(uid, topic, weeks, answers)
 
 # ---------- UI (styles + form + rendering) ----------
@@ -368,11 +340,7 @@ with st.sidebar:
         username = st.text_input("Username (optional)", key="username_input", help="Optional: use same name to keep plans consistent across sessions later.")
         submit = st.form_submit_button("Generate")
 
-# show remote status
-if "API_KEY" in st.secrets and "API_URL" in st.secrets:
-    st.info("Remote generation: ENABLED (using API_KEY + API_URL from secrets).")
-else:
-    st.info("Remote generation: NOT enabled — app will use local generator (no secrets found).")
+# NOTE: status banners removed — silent by default
 
 status_saved = False
 uid = (st.session_state.get("username_input","").strip() or "session_user")
@@ -390,7 +358,8 @@ if submit:
             plans.insert(0, rec)
         state["plans"] = plans
         save_user_state(uid, state)
-        st.success(f"Plan created and saved ✅ (source: {rec.get('source')})")
+        # single clean UI message
+        st.success("Plan ready ✓")
         status_saved = True
 
 st.markdown("<div class='sb-page'><div class='sb-container'>", unsafe_allow_html=True)
