@@ -1,7 +1,3 @@
-🟩 PART 1 — README.md (GitHub ke liye PERFECT version)
-
-🔽 Copy–paste this into your README.md file:
-
 Study Buddy AI — Personalized Study Planner Agent
 
 A multi-agent LLM-powered study planner that generates personalized learning plans, follow-up questions, quizzes, resource recommendations, memory persistence, and full evaluation logs.
